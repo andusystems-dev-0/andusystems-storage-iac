@@ -1,0 +1,47 @@
+# apps/nexus/manifest.yml
+#
+# Bootstrap secrets for Nexus, applied locally by the storage cluster's Ansible
+# role BEFORE management ArgoCD takes over the workload itself. Mirrors the
+# loki/tempo pattern: Ansible renders Jinja2, ArgoCD never sees this file.
+#
+# The actual Nexus workload (Deployment, PVC, Services) lives under
+# apps/nexus/manifests/ as plain non-templated YAML and is deployed by the
+# storage-nexus Application resource in andusystems-management.
+---
+# MinIO blob store credentials. Reused MinIO root credentials, matching the
+# loki/tempo convention. Nexus does NOT read these at runtime — they are
+# referenced by a human (or a future Job) when configuring the S3 blob store
+# post-install. See apps/nexus/README.md.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nexus-minio-credentials
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: blob-store-credentials
+type: Opaque
+stringData:
+  rootUser: "{{ minio_root_user }}"
+  rootPassword: "{{ minio_root_password }}"
+---
+# Initial admin password used by the Nexus container's postStart hook to
+# rewrite the random first-boot password into the desired one. After the hook
+# runs successfully on the very first boot, the file /nexus-data/admin.password
+# is removed and this secret has no further effect — but the secret stays
+# mounted in case the PVC is wiped and we go through first boot again.
+#
+# This is NOT the live admin password. It is only relevant on first boot of a
+# fresh PVC. Change the running admin password through the Nexus UI; do not
+# expect editing this secret to update the live password on a running pod.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nexus-admin-bootstrap
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: admin-bootstrap
+type: Opaque
+stringData:
+  admin-password: "{{ nexus_admin_password }}"

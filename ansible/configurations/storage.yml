@@ -1,0 +1,3 @@
+- import_playbook: ./roles/vms.yml
+- import_playbook: ./roles/kubernetes.yml
+- import_playbook: apps.yml

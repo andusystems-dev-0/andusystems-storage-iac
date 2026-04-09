@@ -1,0 +1,11 @@
+- name: Install Minio
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: minio
+      tags: 
+        - minio
+        - apps
+        - install

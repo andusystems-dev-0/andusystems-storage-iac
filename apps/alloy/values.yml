@@ -1,0 +1,127 @@
+# Grafana Alloy — unified telemetry collector for the storage cluster.
+# Collects metrics, logs, and traces and forwards them to Prometheus, Loki, and Tempo.
+cluster:
+  name: storage-cluster
+
+# ── Destinations ─────────────────────────────
+# Define where collected telemetry data is sent. Each destination corresponds
+# to a backend service running in the cluster.
+destinations:
+  - name: prometheusMetrics
+    type: prometheus
+    url: http://storage-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+
+  - name: lokiLogs
+    type: loki
+    url: http://storage-loki.loki.svc.cluster.local:3100/loki/api/v1/push
+
+  - name: tempoTraces
+    type: otlp
+    url: http://storage-tempo.tempo.svc.cluster.local:4317
+    protocol: grpc
+
+# ── Cluster Metrics (kubelet, cAdvisor, kube-state-metrics, node-exporter) ──
+# node-exporter and kube-state-metrics are already deployed by kube-prometheus-stack
+clusterMetrics:
+  enabled: true
+  node-exporter:
+    deploy: false
+  kube-state-metrics:
+    deploy: false
+
+# ── Pod Logs (all pod stdout/stderr → Loki) ──
+podLogs:
+  enabled: true
+
+# ── Cluster Events (K8s events → Loki) ──
+clusterEvents:
+  enabled: true
+
+# ── Application Observability (OTLP receiver for app traces/metrics) ──
+applicationObservability:
+  enabled: true
+  receivers:
+    otlp:
+      grpc:
+        enabled: true
+        port: 4317
+      http:
+        enabled: true
+        port: 4318
+
+# ── Annotation Autodiscovery (scrape pods with prometheus.io/* annotations) ──
+annotationAutodiscovery:
+  enabled: true
+
+# ── Prometheus Operator Objects (respect ServiceMonitors and PodMonitors) ──
+prometheusOperatorObjects:
+  enabled: true
+
+# ── Alloy collector resource limits ──
+# Each Alloy component runs as a separate DaemonSet/Deployment with its own
+# resource budget. Tune these based on cluster workload volume.
+
+# alloy-metrics: DaemonSet that scrapes Prometheus metrics from nodes and pods
+alloy-metrics:
+  enabled: true
+  alloy:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+# alloy-logs: DaemonSet that tails container logs and ships them to Loki
+alloy-logs:
+  enabled: true
+  alloy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 384Mi
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+# alloy-singleton: Single-replica Deployment for cluster-wide jobs (events, kube-state-metrics)
+alloy-singleton:
+  enabled: true
+  alloy:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# alloy-receiver: Deployment that accepts OTLP traces/metrics from instrumented applications
+alloy-receiver:
+  enabled: true
+  alloy:
+    extraPorts:
+      - name: otlp-grpc
+        port: 4317
+        targetPort: 4317
+        protocol: TCP
+      - name: otlp-http
+        port: 4318
+        targetPort: 4318
+        protocol: TCP
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi

@@ -1,0 +1,96 @@
+# Traefik — ingress controller and reverse proxy for the storage cluster.
+# Uses MetalLB for LoadBalancer IPs on bare-metal nodes.
+
+# Uncomment to run multiple Traefik replicas for high availability
+#deployment:
+#  replicas: 2
+
+# TODO: Consider enabling CRD installation via the chart
+#installCRDs: true
+image:
+  tag: "3.6.7"
+
+# Kubernetes providers — Traefik watches Ingress and IngressRoute resources
+providers:
+  kubernetesIngress:
+    publishedService:
+      enabled: true       # Updates Ingress status with the LoadBalancer IP
+  kubernetesCRD:
+    enabled: true
+    allowCrossNamespace: true          # Allow routes to reference services in other namespaces
+    allowExternalNameServices: true    # Allow routes to ExternalName services
+
+# Uncomment to expose the Traefik dashboard via an IngressRoute.
+# Requires a DNS record and optionally TLS via cert-manager.
+#ingressRoute:
+#  dashboard:
+#    enabled: true
+#    matchRule: Host(`traefik.your-domain.com`) && PathPrefix(`/dashboard`)
+#    entryPoints:
+#      - web
+    #tls:
+    #  certResolver: letsencrypt  # or "vault" for internal
+
+# Entrypoint definitions for HTTP and HTTPS traffic
+ports:
+  web:
+    port: 8000          # internal container port
+    exposedPort: 80     # external port MetalLB exposes
+    protocol: TCP
+  websecure:
+    port: 8443
+    exposedPort: 443
+    protocol: TCP
+  # Uncomment to enable automatic HTTP→HTTPS redirects once TLS certificates are configured
+  #  redirections:
+  #    entryPoint:
+  #      to: websecure
+  #      scheme: https
+  #      permanent: true
+
+# Uncomment to enable the Traefik dashboard in secure mode (requires auth middleware)
+#api:
+#  dashboard: true
+#  insecure: false
+
+# Fix RBAC — allow Traefik to read cluster-wide resources
+podSecurityContext:
+  {}
+
+# Add explicit cluster-level RBAC rules
+rbac:
+  enabled: true
+  namespaced: false    # must be false for cross-namespace routing
+
+# Add extra cluster role rules to fix the configmaps forbidden error
+additionalVolumes: []
+deployment:
+  additionalContainers: []
+
+# This patches the ClusterRole Helm generates
+extraObjects:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: traefik-configmap-access
+    rules:
+      - apiGroups: [""]
+        resources: ["configmaps"]
+        verbs: ["get", "list", "watch"]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: traefik-configmap-access
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: traefik-configmap-access
+    subjects:
+      - kind: ServiceAccount
+        name: storage-traefik
+        namespace: traefik
+
+# Extra CLI arguments passed to the Traefik binary
+additionalArguments:
+  - "--accesslog=true"    # Enable access logs for debugging incoming requests
+  - "--log.level=DEBUG"   # Verbose logging — lower to WARN or ERROR in production

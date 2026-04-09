@@ -1,0 +1,5 @@
+- name: main | install MetalLB
+  import_tasks: install.yml
+  tags: 
+    - metallb
+    - install

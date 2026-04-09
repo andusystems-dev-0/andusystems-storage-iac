@@ -1,0 +1,5 @@
+- name: main | install Nexus
+  import_tasks: install.yml
+  tags:
+    - nexus
+    - install

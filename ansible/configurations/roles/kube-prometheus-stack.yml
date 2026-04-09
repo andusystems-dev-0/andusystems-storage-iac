@@ -1,0 +1,11 @@
+- name: Install kube-prometheus-stack
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: kube-prometheus-stack
+      tags:
+        - kube-prometheus-stack
+        - apps
+        - install

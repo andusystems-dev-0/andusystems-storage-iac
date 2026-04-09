@@ -1,0 +1,51 @@
+---
+- name: Install Prometheus Operator CRDs
+  command: kubectl apply --server-side --force-conflicts -f https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.79.2/stripped-down-crds.yaml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: crds_install
+  changed_when: "'configured' in crds_install.stdout or 'created' in crds_install.stdout"
+
+- name: Install full Prometheus Operator CRDs (Alertmanager, Prometheus, etc.)
+  command: >
+    kubectl apply --server-side --force-conflicts -f
+    https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.79.2/example/prometheus-operator-crd/monitoring.coreos.com_{{ item }}.yaml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  loop:
+    - alertmanagerconfigs
+    - alertmanagers
+    - prometheuses
+    - prometheusagents
+    - scrapeconfigs
+    - thanosrulers
+  register: full_crds_install
+  changed_when: "'configured' in full_crds_install.stdout or 'created' in full_crds_install.stdout"
+
+- name: Wait for Prometheus Operator CRDs to be registered
+  command: kubectl get crd {{ item }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: crd_check
+  retries: 30
+  delay: 10
+  until: crd_check.rc == 0
+  changed_when: false
+  loop:
+    - servicemonitors.monitoring.coreos.com
+    - podmonitors.monitoring.coreos.com
+    - probes.monitoring.coreos.com
+    - prometheusrules.monitoring.coreos.com
+    - alertmanagers.monitoring.coreos.com
+    - prometheuses.monitoring.coreos.com
+
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: monitoring
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"

@@ -1,0 +1,30 @@
+# storage/apps/longhorn/values.yml
+defaultSettings:
+  # Default replica count — 3 is production-safe with 5 workers
+  defaultReplicaCount: 3
+
+  # Data path on each node
+  defaultDataPath: /var/lib/longhorn
+
+  # Storage over-provisioning percentage (200 = allow 2x actual disk)
+  storageOverProvisioningPercentage: 200
+
+  # Minimum storage available before Longhorn stops scheduling
+  storageMinimalAvailablePercentage: 15
+
+  # Guaranteed instance manager CPU (millicores per node)
+  guaranteedInstanceManagerCPU: 12
+
+# Create the default StorageClass and make it the cluster default
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 3
+  reclaimPolicy: Delete
+
+# Longhorn UI disabled — running headless
+longhornUI:
+  replicas: 0
+
+# Disable pre-upgrade checker and uninstall jobs to avoid ArgoCD hook issues
+preUpgradeChecker:
+  jobEnabled: false

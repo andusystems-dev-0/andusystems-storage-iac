@@ -1,0 +1,11 @@
+---
+- name: Create alloy namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: alloy
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"

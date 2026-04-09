@@ -1,0 +1,19 @@
+# cert-manager — automates TLS certificate issuance and renewal.
+# Uses DNS-01 challenges for domain validation (supports wildcard certs).
+installCRDs: true
+
+crds:
+  enabled: true          # Installs cert-manager CRDs automatically
+
+replicaCount: 1          # Single replica is sufficient for this cluster
+
+# Force DNS-01 challenge resolution through public resolvers to avoid
+# split-horizon DNS issues on the local network.
+extraArgs:
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi

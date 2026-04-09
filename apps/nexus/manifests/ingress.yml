@@ -1,0 +1,126 @@
+# apps/nexus/manifests/ingress.yml
+#
+# Traefik IngressRoutes for Nexus, fronted by Pangolin private resources.
+#
+# Traffic flow:
+#   client → https://nexus.andusystems.com   (Pangolin terminates TLS)
+#          → http://<storage-traefik-lb>:80  (Pangolin → storage cluster Traefik)
+#          → Host header routing             (these IngressRoutes)
+#          → nexus / nexus-docker Services   (plain HTTP, ports 8081/8082)
+#
+# Because Pangolin terminates TLS at its edge, these IngressRoutes only use
+# the `web` (HTTP) entrypoint on storage Traefik — there is no TLS section
+# and no cert-manager Certificate. The forwarded-proto-https Middleware tells
+# Nexus that the original client request was HTTPS, which Nexus uses when
+# generating self-referential URLs and (critically) when handling Docker
+# registry auth challenges. Without it, `docker login registry.andusystems.com`
+# fails with a redirect-to-HTTP loop.
+#
+# Pangolin must be configured with two private resources, one per hostname,
+# both pointing at the storage cluster's Traefik LoadBalancer IP.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: nexus-forwarded-proto-https
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: ingress-middleware
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+# Nexus UI / REST API
+#
+# Listens on BOTH `web` (HTTP) and `websecure` (HTTPS) entrypoints because
+# Pangolin forwards HTTPS to its internal target (storage Traefik), even
+# though TLS is already terminated at the Pangolin edge for the client.
+# `tls: {}` makes Traefik serve its self-signed default cert on the websecure
+# leg — Pangolin doesn't verify it (visible in logs as "tls: bad certificate"
+# warnings that don't actually block the request).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nexus-ui
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: ingress-ui
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`nexus.andusystems.com`)
+      kind: Rule
+      middlewares:
+        - name: nexus-forwarded-proto-https
+          namespace: nexus
+      services:
+        - name: nexus
+          port: 8081
+  tls: {}
+---
+# Nexus Docker hosted-repo connector
+#
+# SPLIT INTO TWO INGRESSROUTES because Traefik treats an IngressRoute with
+# `tls: {}` as TLS-only — it ONLY matches on entrypoints that have TLS
+# configured (websecure). The web (HTTP) entrypoint is silently skipped.
+# That breaks docker push, because the docker daemon's `insecure-registries`
+# config falls back to plain HTTP, hits the web entrypoint, and gets a 404
+# from Traefik because no IngressRoute matches there.
+#
+# We need both:
+#   - Plain HTTP on `web`     → for `docker push` from workstations with
+#                                insecure-registries config
+#   - TLS on `websecure`      → for the Pangolin → Traefik leg, since
+#                                Pangolin forwards HTTPS internally
+#
+# Note: the registry port (8082 inside the nexus pod) only opens after a
+# Docker hosted repository is created in the Nexus UI and bound to that
+# port. Until then both routes return connection-refused. See
+# apps/nexus/README.md step 5 of post-install setup.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nexus-docker
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: ingress-docker
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`registry.andusystems.com`)
+      kind: Rule
+      middlewares:
+        - name: nexus-forwarded-proto-https
+          namespace: nexus
+      services:
+        - name: nexus-docker
+          port: 8082
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nexus-docker-tls
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: ingress-docker-tls
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`registry.andusystems.com`)
+      kind: Rule
+      middlewares:
+        - name: nexus-forwarded-proto-https
+          namespace: nexus
+      services:
+        - name: nexus-docker
+          port: 8082
+  tls: {}

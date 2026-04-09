@@ -1,0 +1,22 @@
+# Terraform
+**/terraform.tfvars
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform.lock.hcl
+*.tfplan
+crash.log
+crash.*.log
+
+# Kubeconfig (often contains secrets)
+kubeconfig
+*.kubeconfig
+
+# Env / local
+.env
+.env.*
+!.env.example
+
+ansible/inventory/*/group_vars/all/vault
+.[AI_ASSISTANT]/
+[AI_ASSISTANT].md

@@ -1,0 +1,222 @@
+# apps/nexus/manifests/nexus.yml
+#
+# Nexus Repository OSS workload — applied by the storage-nexus ArgoCD
+# Application resource in andusystems-management/apps/andusystems-storage/.
+#
+# Plain YAML, no Jinja2 templating. ArgoCD pulls this directory directly.
+#
+# Bootstrap secrets (nexus-minio-credentials, nexus-admin-bootstrap) are
+# created out-of-band by the storage cluster's Ansible role from templated
+# files in apps/nexus/manifest.yml — they MUST exist before this workload
+# starts, otherwise the pod will be stuck mounting the missing secret volume.
+#
+# Layout:
+#   - PersistentVolumeClaim nexus-data       Longhorn-backed, holds H2 db,
+#                                            indexes, configs, logs
+#   - Deployment            nexus            single replica, sonatype/nexus3,
+#                                            postStart hook sets admin pwd
+#   - Service               nexus            LoadBalancer, port 8081 (UI/REST)
+#   - Service               nexus-docker     LoadBalancer, port 8082
+#                                            (bound only after a Docker hosted
+#                                            repo is created post-install)
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nexus-data
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      # H2 db, Lucene indexes, configuration, logs only.
+      # Image blobs live in MinIO via the S3 blob store.
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexus
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  # Recreate is required because the PVC is ReadWriteOnce — a rolling update
+  # would deadlock with two pods both trying to mount the same volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nexus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nexus
+        app.kubernetes.io/component: server
+    spec:
+      # nexus3 image runs as user 200. fsGroup makes Longhorn chown the volume
+      # on first mount so the process can write /nexus-data.
+      securityContext:
+        runAsUser: 200
+        runAsGroup: 200
+        fsGroup: 200
+        fsGroupChangePolicy: OnRootMismatch
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: nexus
+          image: sonatype/nexus3:3.74.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+            - name: docker
+              containerPort: 8082
+              protocol: TCP
+          env:
+            # JVM tuning. Sonatype's documented minimum is 2703m heap +
+            # 2703m direct memory (~5.4 GB total). Lowered for homelab use;
+            # bump if you see GC pressure or OOMs.
+            - name: INSTALL4J_ADD_VM_PARAMS
+              value: >-
+                -Xms1500m
+                -Xmx1500m
+                -XX:MaxDirectMemorySize=1500m
+                -Djava.util.prefs.userRoot=/nexus-data/javaprefs
+            # Generate a random first-boot admin password and write it to
+            # /nexus-data/admin.password. The postStart hook below picks this
+            # up and rewrites it to the value from the bootstrap secret.
+            - name: NEXUS_SECURITY_RANDOMPASSWORD
+              value: "true"
+          volumeMounts:
+            - name: nexus-data
+              mountPath: /nexus-data
+            - name: admin-bootstrap
+              mountPath: /etc/nexus-bootstrap
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          # Lifecycle hook: on first pod boot of a fresh PVC, wait for the API
+          # to be reachable, then rewrite the random admin password into the
+          # value from the mounted bootstrap secret. Subsequent boots are
+          # no-ops because /nexus-data/admin.password is removed after success.
+          #
+          # The work runs in a backgrounded subshell so postStart returns
+          # immediately and pod readiness is not blocked. Output is written to
+          # PID 1's stdout so it appears in `kubectl logs`.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    (
+                      for i in $(seq 1 120); do
+                        if curl -sf http://localhost:8081/service/rest/v1/status >/dev/null 2>&1; then
+                          if [ -f /nexus-data/admin.password ]; then
+                            CURRENT="$(cat /nexus-data/admin.password)"
+                            DESIRED="$(cat /etc/nexus-bootstrap/admin-password)"
+                            if curl -fsS -u "admin:${CURRENT}" -X PUT \
+                                 -H "Content-Type: text/plain" \
+                                 -d "${DESIRED}" \
+                                 http://localhost:8081/service/rest/v1/security/users/admin/change-password; then
+                              rm -f /nexus-data/admin.password
+                              echo "[nexus-bootstrap] admin password set from bootstrap secret"
+                            else
+                              echo "[nexus-bootstrap] password change call failed; leaving admin.password in place"
+                            fi
+                          else
+                            echo "[nexus-bootstrap] admin.password absent; nothing to do"
+                          fi
+                          exit 0
+                        fi
+                        sleep 5
+                      done
+                      echo "[nexus-bootstrap] nexus did not become ready within 10 minutes; skipping password change"
+                    ) >/proc/1/fd/1 2>&1 &
+                    exit 0
+          # First boot of a fresh PVC does H2 schema bootstrap (1-3 minutes).
+          # Startup probe gates liveness/readiness until the web server is up.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30   # 30 * 10s = 5 min max startup
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /service/rest/v1/status
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: nexus-data
+          persistentVolumeClaim:
+            claimName: nexus-data
+        - name: admin-bootstrap
+          secret:
+            secretName: nexus-admin-bootstrap
+            defaultMode: 0440
+---
+# UI / REST API service. MetalLB hands out an IP from the configured pool.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexus
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: server
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: nexus
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      protocol: TCP
+---
+# Docker hosted-repo connector service. The pod listens on 8082 only AFTER you
+# create a Docker hosted repository in Nexus and bind it to port 8082 — see
+# apps/nexus/README.md for the post-install steps. The Service exists ahead of
+# time so the LoadBalancer IP is stable from the moment the namespace is up.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexus-docker
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: docker-connector
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: nexus
+  ports:
+    - name: docker
+      port: 8082
+      targetPort: docker
+      protocol: TCP

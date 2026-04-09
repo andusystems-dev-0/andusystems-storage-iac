@@ -1,0 +1,11 @@
+# apps/minio/manifest.yml
+# MinIO credentials secret — placeholder values, override via Ansible Vault
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: minio
+type: Opaque
+stringData:
+  rootUser: "{{ minio_root_user }}"
+  rootPassword: "{{ minio_root_password }}"

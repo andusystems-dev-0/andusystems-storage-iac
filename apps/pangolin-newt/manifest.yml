@@ -1,0 +1,10 @@
+# storage/apps/pangolin-newt/secret.yml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: newt-credentials
+  namespace: newt
+stringData:
+  newt-endpoint: "{{ pangolin_endpoint }}"
+  newt-id: "{{ newt_id }}"
+  newt-secret: "{{ newt_secret }}"

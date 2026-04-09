@@ -1,0 +1,11 @@
+- name: Install Alloy
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: alloy
+      tags:
+        - alloy
+        - apps
+        - install

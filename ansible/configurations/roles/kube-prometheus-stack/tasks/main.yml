@@ -1,0 +1,5 @@
+- name: main | install kube-prometheus-stack
+  import_tasks: install.yml
+  tags:
+    - kube-prometheus-stack
+    - install

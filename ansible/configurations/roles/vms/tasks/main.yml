@@ -1,0 +1,6 @@
+- name: main | install VMs
+  import_tasks: install.yml
+  become: true
+  tags: 
+    - vms
+    - install

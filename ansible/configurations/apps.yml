@@ -1,0 +1,8 @@
+- import_playbook: ./roles/cert-manager.yml
+- import_playbook: ./roles/pangolin-newt.yml
+- import_playbook: ./roles/kube-prometheus-stack.yml
+- import_playbook: ./roles/minio.yml
+- import_playbook: ./roles/loki.yml
+- import_playbook: ./roles/tempo.yml
+- import_playbook: ./roles/alloy.yml
+- import_playbook: ./roles/nexus.yml

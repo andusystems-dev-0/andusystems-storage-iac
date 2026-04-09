@@ -1,0 +1,5 @@
+- name: main | install Tempo
+  import_tasks: install.yml
+  tags:
+    - tempo
+    - install

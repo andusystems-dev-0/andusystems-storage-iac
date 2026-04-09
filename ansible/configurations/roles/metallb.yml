@@ -1,0 +1,11 @@
+- name: Install MetalLB
+  become: true
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: metallb
+      tags: 
+        - metallb
+        - install

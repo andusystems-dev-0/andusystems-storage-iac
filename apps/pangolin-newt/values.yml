@@ -1,0 +1,12 @@
+# Pangolin Newt — lightweight tunnel agent that connects this cluster
+# to the Pangolin reverse proxy for secure external access.
+newtInstances:
+  - name: main
+    enabled: true
+    auth:
+      # Credentials are stored in a Kubernetes secret managed outside this chart
+      existingSecretName: newt-credentials
+      keys:
+        endpointKey: newt-endpoint   # Pangolin server URL to connect to
+        idKey: newt-id               # Unique tunnel identifier
+        secretKey: newt-secret       # Authentication token for the tunnel

@@ -1,0 +1,33 @@
+# --- Terraform: Install Helm Charts ---
+- name: Terraform destroy (layer-2-helmapps)
+  community.general.terraform:
+    project_path: "{{ repo_root }}/terraform/layers/layer-2-helmapps"
+    variables_files:
+      - "{{ repo_root }}/terraform/terraform.tfvars"
+    state: absent
+    force_init: true
+  register: tf_destroy
+  retries: 5
+  delay: 15
+  until: tf_destroy is not failed
+  ignore_errors: true
+
+- name: Terraform apply (layer-2-helmapps)
+  community.general.terraform:
+    project_path: "{{ repo_root }}/terraform/layers/layer-2-helmapps"
+    variables_files:
+      - "{{ repo_root }}/terraform/terraform.tfvars"
+    state: present
+    force_init: true
+  register: tf_apply
+  retries: 2
+  delay: 10
+  until: tf_apply is not failed
+  ignore_errors: true
+
+- name: install | Install Metallb Manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', repo_root + '/apps/metallb/manifest.yml') | from_yaml_all | list }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"

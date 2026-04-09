@@ -1,0 +1,11 @@
+- name: Install Kubernetes components
+  become: true
+  gather_facts: true
+  hosts: vms
+  tasks:
+
+    - include_role:
+        name: kubernetes
+      tags: 
+        - kubernetes
+        - install

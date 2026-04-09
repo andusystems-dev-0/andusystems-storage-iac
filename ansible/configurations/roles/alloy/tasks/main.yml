@@ -1,0 +1,5 @@
+- name: main | install Alloy
+  import_tasks: install.yml
+  tags:
+    - alloy
+    - install

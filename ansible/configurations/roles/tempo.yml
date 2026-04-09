@@ -1,0 +1,11 @@
+- name: Install Tempo
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: tempo
+      tags:
+        - tempo
+        - apps
+        - install

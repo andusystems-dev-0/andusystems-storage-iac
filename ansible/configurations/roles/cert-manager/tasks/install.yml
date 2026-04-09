@@ -1,0 +1,50 @@
+- name: Install cert-manager CRDs
+  command: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.crds.yaml
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: crds_install
+  changed_when: "'configured' in crds_install.stdout or 'created' in crds_install.stdout"
+
+- name: Create cert-manager namespace on management cluster
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: cert-manager
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Create Cloudflare API token secret on management cluster
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cloudflare-api-token
+        namespace: cert-manager
+      type: Opaque
+      stringData:
+        api-token: "{{ cloudflare_api_token }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  no_log: true    # prevents token from appearing in logs
+
+- name: Apply Cert-Manager Manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', repo_root + '/apps/cert-manager/manifest.yml') | from_yaml_all | list }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Wait for ClusterIssuer CRD to be registered
+  command: kubectl get crd clusterissuers.cert-manager.io
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: crd_check
+  retries: 30
+  delay: 10
+  until: crd_check.rc == 0
+  changed_when: false

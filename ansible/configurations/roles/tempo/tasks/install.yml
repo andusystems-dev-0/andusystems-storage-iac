@@ -1,0 +1,18 @@
+---
+- name: Create tempo namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: tempo
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Apply Manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', repo_root + '/apps/tempo/manifest.yml') | from_yaml_all | list }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"

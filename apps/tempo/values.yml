@@ -1,0 +1,67 @@
+# Tempo — distributed tracing backend for the storage cluster.
+# Receives OTLP traces from Alloy and stores them in MinIO (S3-compatible).
+fullnameOverride: storage-tempo
+
+tempo:
+  # OTLP receiver — Alloy and instrumented apps send traces here
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+  # MinIO as trace storage backend
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: tempo-data
+        endpoint: minio.minio.svc.cluster.local:9000
+        insecure: true
+
+  # Generate span metrics for Prometheus
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://storage-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+
+  # Global rate limits and per-tenant overrides
+  global_overrides:
+    per_tenant_override_config: ""
+    max_traces_per_user: 50000      # Cap to prevent runaway trace volume
+
+  # MinIO S3 credentials injected from a Kubernetes secret
+  extraEnv:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: tempo-minio-credentials
+          key: rootUser
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: tempo-minio-credentials
+          key: rootPassword
+
+# Local WAL (write-ahead log) persistence for in-flight traces before flushing to S3
+persistence:
+  enabled: true
+  storageClassName: longhorn
+  size: 10Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Expose Tempo metrics to Prometheus via a ServiceMonitor
+serviceMonitor:
+  enabled: true
+
+# LoadBalancer service allows access from other clusters on the network
+service:
+  type: LoadBalancer

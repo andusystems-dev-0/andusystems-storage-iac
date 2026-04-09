@@ -1,0 +1,86 @@
+# kube-prometheus-stack — monitoring stack for the storage cluster.
+# This is a spoke cluster; the hub cluster runs the centralized Grafana UI.
+fullnameOverride: storage-kube-prometheus
+
+# Spoke cluster config — NO Grafana UI (hub cluster handles that)
+grafana:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 7d          # How long to keep metrics locally before compaction/deletion
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 15Gi
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    # Scrape all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # Enable remote write receiver so Alloy can push metrics
+    enableRemoteWriteReceiver: true
+    enableFeatures:
+      - remote-write-receiver
+      - otlp-write-receiver
+    # Identify this cluster in multi-cluster queries
+    externalLabels:
+      cluster: storage
+      vlan: "40"
+  service:
+    type: LoadBalancer
+    port: 9090
+
+# Alertmanager — handles routing, grouping, and deduplication of alerts
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# node-exporter: exposes hardware and OS metrics from each node
+nodeExporter:
+  enabled: true
+
+# kube-state-metrics: generates metrics about the state of Kubernetes objects
+kubeStateMetrics:
+  enabled: true
+
+# Prometheus Operator CRDs (fixes MinIO Probe CRD issue)
+crds:
+  enabled: true
+
+# Prometheus Operator — manages Prometheus/Alertmanager instances and scrape configs
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

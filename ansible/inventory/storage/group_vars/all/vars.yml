@@ -1,0 +1,54 @@
+---
+# Repository and paths
+repo_root: "{{ vault_repo_root }}"
+tfvars_file: "{{ vault_tfvars_file }}"
+apps_dir: "{{ vault_apps_dir }}"
+
+# SSH connection settings
+ssh_user: "{{ vault_ssh_user }}"  # e.g., "ubuntu", "admin", "alex"
+ssh_key_path: "{{ vault_ssh_key_path }}"  # e.g., "/home/user/.ssh/id_rsa"
+
+# Terraform outputs (will be populated dynamically)
+control_plane_ip: "{{ vault_control_plane_ip }}"
+worker_ips: "{{ vault_worker_ips }}"
+vm_ips: "{{ vault_vm_ips }}"
+
+# Kubernetes settings
+kubernetes_version: "{{ vault_kubernetes_version }}"
+pod_network_cidr: "{{ vault_pod_network_cidr }}"
+
+# SSH connection retry settings
+ssh_max_retries: "{{ vault_ssh_max_retries }}"
+ssh_retry_delay: "{{ vault_ssh_retry_delay }}"
+ssh_connect_timeout: "{{ vault_ssh_connect_timeout }}"
+ssh_strict_host_key_checking: "{{ vault_ssh_strict_host_key_checking }}"
+
+# SSH options (constructed from above settings)
+# Note: This will be built dynamically in the playbook
+ssh_common_args: "{{ vault_ssh_common_args }}"
+
+# Kubeconfig path
+kubeconfig: "{{ vault_kubeconfig }}"
+
+# Join command (will be populated during runtime)
+join_command: "{{ vault_join_command }}"
+
+#cloudflare api token for tls certs
+cloudflare_api_token: "{{ vault_cloudflare_api_token }}"
+letsencrypt_email: "{{ vault_letsencrypt_email }}"
+
+pangolin_endpoint: "{{ vault_pangolin_endpoint }}"
+newt_id: "{{ vault_newt_id }}"
+newt_secret: "{{ vault_newt_secret }}"
+
+metallb_ip_range: "{{ vault_metallb_ip_range }}"
+
+homepage_url: "{{ vault_homepage_url }}"
+
+grafana_admin_user: "{{ vault_grafana_admin_user }}"
+grafana_admin_password: "{{ vault_grafana_admin_password }}"
+
+minio_root_user: "{{ vault_minio_root_user }}"
+minio_root_password: "{{ vault_minio_root_password }}"
+
+nexus_admin_password: "{{ vault_nexus_admin_password }}"

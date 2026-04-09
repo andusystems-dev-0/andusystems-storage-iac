@@ -1,0 +1,5 @@
+- name: main | install Kubernetes components
+  import_tasks: install.yml
+  tags: 
+    - kubernetes
+    - install

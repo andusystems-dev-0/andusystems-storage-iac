@@ -1,0 +1,11 @@
+- name: Install Nexus
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: nexus
+      tags:
+        - nexus
+        - apps
+        - install

@@ -1,0 +1,11 @@
+- name: Install Loki
+  gather_facts: true
+  hosts: localhost
+  tasks:
+
+    - include_role:
+        name: loki
+      tags:
+        - loki
+        - apps
+        - install

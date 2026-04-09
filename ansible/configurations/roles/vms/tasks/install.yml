@@ -1,0 +1,80 @@
+---
+# Create VMs on Proxmox
+# --- Terraform: Create VMs ---
+- name: Ensure terraform provider binaries are executable
+  ansible.builtin.shell: |
+    find "{{ repo_root }}/terraform" -path '*/terraform-provider-*' -type f -exec chmod +x {} +
+  changed_when: false
+
+- name: Terraform destroy (layer-1-infrastructure)
+  community.general.terraform:
+    project_path: "{{ repo_root }}/terraform/layers/layer-1-infrastructure"
+    variables_files:
+      - "{{ repo_root }}/terraform/terraform.tfvars"
+    state: absent
+    force_init: true
+  register: tf_destroy
+  retries: 5
+  delay: 15
+  until: tf_destroy is not failed
+  ignore_errors: true
+
+- name: Terraform apply (layer-1-infrastructure)
+  community.general.terraform:
+    project_path: "{{ repo_root }}/terraform/layers/layer-1-infrastructure"
+    variables_files:
+      - "{{ repo_root }}/terraform/terraform.tfvars"
+    state: present
+    force_init: true
+  register: tf_apply
+  retries: 5
+  delay: 15
+  until: tf_apply is not failed
+  ignore_errors: true
+
+- name: install | Add hosts entry for vms
+  ansible.builtin.lineinfile:
+    path: '/etc/hosts'
+    line: '{{ item[0] }} {{ item[1] }}'
+    state: present
+  loop: "{{ vm_ips | zip(['storagectrl', 'storagewrkr0', 'storagewrkr1', 'storagewrkr2', 'storagewrkr3', 'storagewrkr4']) | list }}"
+
+- name: install | Remove any existing known_hosts entries for VMs
+  ansible.builtin.known_hosts:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ vm_ips }}"
+  become: false
+
+- name: install | Get SSH host key for VMs
+  ansible.builtin.command: "ssh-keyscan -H {{ item }}"
+  loop: "{{ vm_ips }}"
+  register: "ssh_keyscan"
+  #until: ssh_keyscan.rc == 0
+  retries: 4
+  delay: 15
+  #changed_when: false
+  become: false
+  ignore_errors: true
+
+- name: install | Add SSH host key to known_hosts
+  ansible.builtin.known_hosts:
+    name: "{{ item.item }}"
+    key: "{{ item.stdout }}"
+    state: present
+  loop: "{{ ssh_keyscan.results }}"
+  become: false
+
+- name: install | Wait for VMs to accept SSH connections
+  ansible.builtin.wait_for:
+    host: "{{ item }}"
+    port: 22
+    timeout: 300
+    delay: 10
+  loop: "{{ vm_ips }}"
+  become: false
+
+- name: install | ssh-copy-id to vms
+  ansible.builtin.shell: "ssh-copy-id -i {{ ssh_key_path }} {{ ssh_user }}@{{ item }}"
+  loop: "{{ vm_ips }}"
+  become: false

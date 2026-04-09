@@ -1,0 +1,5 @@
+- name: main | install Newt 
+  import_tasks: install.yml
+  tags: 
+    - pangolin-newt
+    - install

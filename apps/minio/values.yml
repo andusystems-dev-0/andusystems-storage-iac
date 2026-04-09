@@ -1,0 +1,123 @@
+# apps/minio/values.yml
+# Chart: minio/minio (version 5.4.0)
+# S3-compatible object storage for Loki and Tempo backends.
+# Standalone (single-node) mode — suitable for homelab/small production.
+
+mode: standalone
+
+# Pull credentials from the Kubernetes secret created by Ansible
+existingSecret: minio-credentials
+
+# Persistent storage for MinIO data
+persistence:
+  enabled: true
+  storageClass: longhorn
+  size: 20Gi
+  accessMode: ReadWriteOnce
+
+# Pre-create buckets for Loki, Tempo, and Nexus on startup
+buckets:
+  - name: loki-data
+    policy: none
+    purge: false
+  - name: loki-ruler
+    policy: none
+    purge: false
+  - name: tempo-data
+    policy: none
+    purge: false
+  - name: nexus-blobs
+    policy: none
+    purge: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Production service configuration - LoadBalancer for external access
+service:
+  type: LoadBalancer
+  port: 9000
+  # Optional: Annotate for specific LB behavior
+  annotations:
+    # If using AWS:
+    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+    
+    # If using MetalLB in bare-metal:
+    metallb.universe.tf/allow-shared-ip: "minio-s3"
+    
+    # If you want to preserve client IP
+    service.beta.kubernetes.io/external-traffic: "Local"
+
+# Optional: Add a second service for MinIO Console (Web UI)
+extraServices:
+  - name: minio-console
+    type: LoadBalancer
+    port: 9001
+    targetPort: 9001
+    annotations:
+      # Similar annotations as above
+      metallb.universe.tf/allow-shared-ip: "minio-console"
+    # Optional: Specify loadBalancerIP if you want a static IP
+    # loadBalancerIP: 192.168.1.100
+
+# No public access via ingress
+ingress:
+  enabled: false
+consoleIngress:
+  enabled: false
+
+# Prometheus ServiceMonitor
+metrics:
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+
+# Production readiness checks
+probe:
+  # API readiness probe
+  readiness:
+    enabled: true
+    path: /minio/health/ready
+    port: 9000
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+    successThreshold: 1
+  
+  # API liveness probe
+  liveness:
+    enabled: true
+    path: /minio/health/live
+    port: 9000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+    successThreshold: 1
+
+# Optional: Configure pod disruption budget for high availability
+# Note: This is more relevant for distributed mode
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+
+# Optional: Add pod anti-affinity for better distribution
+affinity: {}
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #   - weight: 100
+  #     podAffinityTerm:
+  #       labelSelector:
+  #         matchExpressions:
+  #         - key: app
+  #           operator: In
+  #           values:
+  #           - minio
+  #       topologyKey: kubernetes.io/hostname

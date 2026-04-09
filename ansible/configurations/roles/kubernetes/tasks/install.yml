@@ -1,0 +1,258 @@
+---
+# Configure VMs on Proxmox
+- name: install | Allow ubuntu user to run passwordless sudo commands
+  ansible.builtin.copy:
+    content: '{{ ssh_user }} ALL=(ALL) NOPASSWD:ALL'
+    dest: '/etc/sudoers.d/{{ ssh_user }}'
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  become: true
+
+- name: install | Set GODEBUG environment variable
+  ansible.builtin.set_fact:
+    ansible_environment:
+      GODEBUG: "{{ lookup('env', 'GODEBUG') }},asyncpreemptoff=1"
+
+# --- Install Kubernetes dependencies on all nodes ---
+- name: install | Wait for apt locks to release
+  ansible.builtin.shell: |
+    while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; do
+      echo "Waiting for apt lock..."
+      sleep 5
+    done
+  changed_when: false
+  args:
+    executable: /bin/bash
+
+- name: install | Disable swap
+  ansible.builtin.command:
+    cmd: swapoff -a
+  changed_when: true
+
+- name: install | Add Kubernetes apt key
+  ansible.builtin.apt_key:
+    url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+    keyring: /usr/share/keyrings/kubernetes-apt-keyring.gpg
+    state: present
+
+- name: install | Add Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    state: present
+    filename: kubernetes.list
+
+- name: install | Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: install | Install required packages
+  ansible.builtin.apt:
+    name:
+      - containerd
+      - kubelet
+      - kubeadm
+      - kubectl
+      - conntrack
+    state: present
+
+- name: install | Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: install | Load required kernel modules
+  ansible.builtin.copy:
+    content: |
+      overlay
+      br_netfilter
+    dest: /etc/modules-load.d/k8s.conf
+    mode: '0644'
+
+- name: install | Load modules
+  ansible.builtin.command:
+    cmd: "modprobe {{ item }}"
+  loop:
+    - overlay
+    - br_netfilter
+  changed_when: false
+
+- name: install | Configure sysctl for Kubernetes
+  ansible.builtin.copy:
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    mode: '0644'
+
+- name: install | Apply sysctl settings
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: false
+
+- name: install | Configure containerd
+  block:
+    - name: Create containerd directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: install | Generate default containerd config
+      ansible.builtin.shell: |
+        containerd config default > /etc/containerd/config.toml
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: install | Enable SystemdCgroup in containerd config
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: install | Start and enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+- name: install | Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+
+# --- Initialize control plane ---
+- name: install | Reset kubeadm (clean state)
+  ansible.builtin.command:
+    cmd: kubeadm reset -f
+  changed_when: true
+  ignore_errors: true
+
+- name: install | Clean CNI interfaces
+  ansible.builtin.shell: |
+    ip link delete cni0 2>/dev/null || true
+    ip link delete flannel.1 2>/dev/null || true
+    rm -rf /var/lib/cni/networks/* /run/flannel/subnet.env 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: install | Initialize Kubernetes cluster
+  ansible.builtin.command:
+    cmd: kubeadm init --pod-network-cidr={{ pod_network_cidr }}
+  register: kubeadm_init
+  changed_when: "'Your Kubernetes control-plane has been initialized successfully' in kubeadm_init.stdout"
+
+- name: install | Create .kube directory
+  ansible.builtin.file:
+    path: /home/{{ ssh_user }}/.kube
+    state: directory
+    mode: '0700'
+
+- name: install | Copy admin.conf to user's kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ssh_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ssh_user }}"
+    group: "{{ ssh_user }}"
+    mode: '0600'
+
+- name: install | Set ownership of kubeconfig
+  ansible.builtin.file:
+    path: /home/{{ ssh_user }}/.kube/config
+    owner: "{{ ssh_user }}"
+    group: "{{ ssh_user }}"
+    mode: '0600'
+
+- name: install | Check if cluster is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_config
+  run_once: true
+  become: true
+  when: inventory_hostname in groups['controllers']
+
+- name: install | Get join command from control plane
+  ansible.builtin.command:
+    cmd: kubeadm token create --print-join-command
+  register: join_command_raw
+  changed_when: true
+  run_once: true
+  become: true
+  when: inventory_hostname in groups['controllers'] and k8s_config.stat.exists
+
+- name: install | Set join command fact
+  ansible.builtin.set_fact:
+    join_command: "{{ join_command_raw.stdout }}"
+    cacheable: true
+  run_once: true
+
+- name: install | Install Flannel CNI
+  ansible.builtin.command:
+    cmd: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  changed_when: true
+  run_once: true
+  environment:
+    KUBECONFIG: "/home/{{ ssh_user }}/.kube/config"
+
+- name: install | Fetch kubeconfig to local machine
+  ansible.builtin.fetch:
+    src: "/home/{{ ssh_user }}/.kube/config"
+    dest: "{{ repo_root }}/kubeconfig"
+    flat: true
+  run_once: true
+
+# --- Join worker nodes ---
+- name: install | Reset kubeadm on worker
+  ansible.builtin.command:
+    cmd: kubeadm reset -f
+  changed_when: true
+  ignore_errors: true
+  when: inventory_hostname in groups['workers']
+
+- name: install | Clean CNI interfaces on worker
+  ansible.builtin.shell: |
+    ip link delete cni0 2>/dev/null || true
+    ip link delete flannel.1 2>/dev/null || true
+    rm -rf /var/lib/cni/networks/* /run/flannel/subnet.env 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when: inventory_hostname in groups['workers']
+
+- name: install | Wait for control plane to be ready before joining workers
+  ansible.builtin.shell: |
+    sleep 15
+
+- name: install | Get fresh join command
+  ansible.builtin.command:
+    cmd: kubeadm token create --print-join-command
+  register: fresh_join_command
+  delegate_to: "{{ groups['controllers'][0] }}"
+  run_once: true
+  changed_when: true
+
+- name: install | Set fresh join command fact
+  ansible.builtin.set_fact:
+    join_command: "{{ fresh_join_command.stdout }}"
+  run_once: true
+
+- name: install | Join worker to cluster with retries
+  ansible.builtin.shell: |
+    {{ join_command }} --ignore-preflight-errors=all
+  args:
+    executable: /bin/bash
+  when: inventory_hostname in groups['workers']
+  register: join_result
+  retries: 3
+  delay: 15
+  until: join_result.rc == 0
