@@ -52,3 +52,13 @@ minio_root_user: "{{ vault_minio_root_user }}"
 minio_root_password: "{{ vault_minio_root_password }}"
 
 nexus_admin_password: "{{ vault_nexus_admin_password }}"
+nexus_ci_pusher_user: "{{ vault_nexus_ci_pusher_user }}"
+nexus_ci_pusher_password: "{{ vault_nexus_ci_pusher_password }}"
+nexus_cluster_puller_user: "{{ vault_nexus_cluster_puller_user }}"
+nexus_cluster_puller_password: "{{ vault_nexus_cluster_puller_password }}"
+# S3 blob store name on Nexus pointing at the MinIO bucket. Defaults to
+# the README's recommended `nexus-blobs`. Must be created via the Nexus UI
+# (Settings → Repository → Blob Stores → Create) BEFORE first running this
+# role; the role does not create blob stores. Override per-environment in
+# vault if your existing install uses a different name.
+nexus_blob_store_name: "{{ vault_nexus_blob_store_name | default('nexus-blobs') }}"

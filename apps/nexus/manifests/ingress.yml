@@ -1,23 +1,30 @@
 # apps/nexus/manifests/ingress.yml
 #
-# Traefik IngressRoutes for Nexus, fronted by Pangolin private resources.
+# Traefik IngressRoutes for Nexus. Two access patterns share these routes:
 #
-# Traffic flow:
-#   client → https://nexus.andusystems.com   (Pangolin terminates TLS)
-#          → http://<storage-traefik-lb>:80  (Pangolin → storage cluster Traefik)
-#          → Host header routing             (these IngressRoutes)
-#          → nexus / nexus-docker Services   (plain HTTP, ports 8081/8082)
+#   1. PUBLIC PATH — through Pangolin
+#      client → https://nexus.andusystems.com  (Pangolin terminates TLS)
+#             → http://<storage-traefik-lb>:80 (Pangolin → storage Traefik)
+#             → Host header routing
+#             → nexus / nexus-docker Services (plain HTTP, ports 8081/8082)
+#      Pangolin handles the public-facing TLS, so the storage Traefik leg
+#      from Pangolin is HTTP. The X-Forwarded-Proto: https middleware below
+#      tells Nexus the original client request was HTTPS, which Nexus uses
+#      when generating self-referential URLs (critically: docker registry
+#      bearer realm URLs — without it, Nexus emits http:// realm URLs that
+#      cause docker login redirect loops).
 #
-# Because Pangolin terminates TLS at its edge, these IngressRoutes only use
-# the `web` (HTTP) entrypoint on storage Traefik — there is no TLS section
-# and no cert-manager Certificate. The forwarded-proto-https Middleware tells
-# Nexus that the original client request was HTTPS, which Nexus uses when
-# generating self-referential URLs and (critically) when handling Docker
-# registry auth challenges. Without it, `docker login registry.andusystems.com`
-# fails with a redirect-to-HTTP loop.
+#   2. INTERNAL PATH — direct from other clusters' pods
+#      runner pod → https://10.238.40.21:443  (with hostAliases pinning
+#                                               registry.andusystems.com)
+#                 → storage Traefik websecure entrypoint
+#                 → nexus-docker-tls IngressRoute → nexus-docker:8082
+#      buildkit / containerd / any client that does TLS validation will
+#      reject a self-signed cert here, so the websecure leg uses the real
+#      Let's Encrypt cert from cert.yml (secretName: nexus-tls).
 #
-# Pangolin must be configured with two private resources, one per hostname,
-# both pointing at the storage cluster's Traefik LoadBalancer IP.
+# Pangolin must be configured with two private resources, one per public
+# hostname, both pointing at the storage Traefik LoadBalancer IP.
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
@@ -34,12 +41,17 @@ spec:
 ---
 # Nexus UI / REST API
 #
-# Listens on BOTH `web` (HTTP) and `websecure` (HTTPS) entrypoints because
-# Pangolin forwards HTTPS to its internal target (storage Traefik), even
-# though TLS is already terminated at the Pangolin edge for the client.
-# `tls: {}` makes Traefik serve its self-signed default cert on the websecure
-# leg — Pangolin doesn't verify it (visible in logs as "tls: bad certificate"
-# warnings that don't actually block the request).
+# Listens on BOTH `web` (HTTP) and `websecure` (HTTPS) entrypoints. Pangolin
+# forwards HTTPS to its internal target (storage Traefik) even though TLS is
+# already terminated at the Pangolin edge. The websecure leg uses the real
+# nexus-tls cert from cert.yml so any direct in-cluster client that hits
+# this hostname over HTTPS gets a valid chain.
+#
+# Note: with `tls.secretName` set, Traefik treats this IngressRoute as
+# TLS-only — the `web` (HTTP) entrypoint listed above is silently skipped
+# in favour of websecure. That means the Pangolin → Traefik leg actually
+# has to be HTTPS (which it is — Pangolin forwards HTTPS internally even
+# though it terminates the public-facing TLS at its edge).
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -61,7 +73,8 @@ spec:
       services:
         - name: nexus
           port: 8081
-  tls: {}
+  tls:
+    secretName: nexus-tls
 ---
 # Nexus Docker hosted-repo connector
 #
@@ -123,4 +136,9 @@ spec:
       services:
         - name: nexus-docker
           port: 8082
-  tls: {}
+  # Use the real Let's Encrypt cert (cert.yml) instead of Traefik's
+  # self-signed default. buildkit / containerd / any client that performs
+  # TLS validation needs this when pulling/pushing from inside another
+  # cluster (e.g. the GitHub Actions runner pods on the management cluster).
+  tls:
+    secretName: nexus-tls

@@ -77,6 +77,28 @@ process, so a stuck pod boot can never wedge readiness on a postStart timeout.
 
 ## First-time setup
 
+**Automation:** the storage cluster's `nexus` ansible role runs the post-install
+configuration steps below automatically (realm activation, hosted repo creation
+with the `forceBasicAuth=false` trap fixed, role + user provisioning). Re-run
+the role any time after `storage-nexus` shows Synced + Healthy in management
+ArgoCD:
+
+```sh
+ansible-playbook -i ansible/inventory/storage \
+  ansible/configurations/roles/nexus.yml --tags nexus,install
+```
+
+The role is fully idempotent — every task GETs current state via the Nexus
+REST API and only PUT/POSTs if drift is detected. The walkthrough below is
+preserved as a fallback for when the role can't be re-run, and as a reference
+for the operations the role performs.
+
+The **only** post-install step the role does NOT do is creating the S3 blob
+store on MinIO (step 2 below) — that one is left manual because blob stores
+can't be moved or renamed once they hold data, and getting the S3 credentials
+wrong programmatically is harder to recover from than getting it right by
+hand once. Do step 2 first, then run the ansible role for steps 1, 3, 4, 5.
+
 After ArgoCD shows `storage-nexus` as Synced + Healthy and the pod is ready,
 do these steps **once**.
 

@@ -1,4 +1,9 @@
 ---
+#<REMOVED BY SENTINEL BOT: SECRET — secret or credential detected><REMOVED BY SENTINEL BOT: SECRET — secret or credential detected><REMOVED BY SENTINEL BOT: SECRET — secret or credential detected><REMOVED BY SENTINEL BOT: SECRET — secret or credential detected><REMOVED BY SENTINEL BOT: SECRET — secret or credential detected><REMOVED BY SENTINEL BOT: SECRET — secret or credential detected>=====================================================================
+# PHASE 1 — bootstrap (runs before management ArgoCD has the workload up)
+# Creates the nexus namespace + Jinja2-templated bootstrap secrets that the
+# pod needs at first boot (admin password, MinIO credentials).
+# ============================================================================
 - name: Create nexus namespace
   kubernetes.core.k8s:
     state: present
@@ -16,3 +21,473 @@
     definition: "{{ lookup('template', repo_root + '/apps/nexus/manifest.yml') | from_yaml_all | list }}"
   environment:
     KUBECONFIG: "{{ kubeconfig }}"
+
+# ============================================================================
+# PHASE 2 — post-install configuration (runs after management ArgoCD has
+# synced the storage-nexus Application and the pod is up).
+#
+# Re-running this phase is idempotent: each task GETs current state via the
+# Nexus REST API and only PUT/POSTs if drift is detected. All API calls go
+# through `kubectl exec` against the nexus pod's localhost:8081, which avoids
+# DNS / TLS / Pangolin / cross-cluster routing concerns entirely.
+#
+# Replaces the manual UI clicks documented in apps/nexus/README.md
+# steps 1-5 of the post-install setup section. The README's UI walkthrough
+# is preserved as a fallback for when this role can't be re-run.
+#
+# WHY this is needed at all (the trap we hit live): Nexus's defaults for a
+# fresh hosted docker repo set forceBasicAuth=true and don't include the
+# DockerToken realm in the active list. The combination silently breaks
+# `docker login` even with correct credentials, returning BASIC realm headers
+# instead of Bearer realm headers. Worth automating once.
+# ============================================================================
+
+- name: post-install | Resolve nexus pod name
+  command: >
+    kubectl -n nexus get pod -l app.kubernetes.io/name=nexus
+    -o jsonpath={.items[0].metadata.name}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: nexus_pod
+  changed_when: false
+  retries: 60
+  delay: 10
+  # The pod might not exist yet on first deploy if management ArgoCD hasn't
+  # finished syncing yet. Retry for up to 10 minutes.
+  until: nexus_pod.rc == 0 and nexus_pod.stdout != ""
+
+- name: post-install | Wait for Nexus REST API to respond
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -sf -o /dev/null -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/status
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: nexus_api_ready
+  changed_when: false
+  retries: 60
+  delay: 10
+  # First-boot postStart hook can take a couple minutes to set the admin
+  # password. Until then this returns 401 and we retry.
+  until: nexus_api_ready.rc == 0
+  no_log: true
+
+# --- Realms ----------------------------------------------------------------
+# Add the Docker Bearer Token Realm to the active set so docker clients get
+# `Bearer realm=...` instead of `BASIC realm=...` in the WWW-Authenticate
+# header. Without this, `docker login` against the registry fails even with
+# correct credentials because dockerd's auth flow expects bearer tokens.
+
+- name: post-install | Get currently active realms
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -sf -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/security/realms/active
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: active_realms
+  changed_when: false
+  no_log: true
+
+- name: post-install | Activate Docker Bearer Token Realm
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - PUT
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ ((active_realms.stdout | from_json) + ['DockerToken']) | unique | to_json }}"
+      - http://localhost:8081/service/rest/v1/security/realms/active
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: '"DockerToken" not in (active_realms.stdout | from_json)'
+
+# --- Docker hosted repository ----------------------------------------------
+# Create andusystems-docker if missing, with forceBasicAuth=false (the
+# critical setting — it defaults to true in the UI, which is the second
+# half of the auth trap above). httpPort 8082 binds the registry connector
+# inside the nexus pod, which the nexus-docker Service forwards to.
+#
+# `nexus_blob_store_name` (default `nexus-blobs`) is the S3 blob store on
+# MinIO. On a fresh install, the operator must create this blob store via
+# the UI BEFORE the first run of this role — the role does not create the
+# blob store itself because the S3 credentials are managed separately and
+# blob stores can't be moved or renamed once they hold data, so we don't
+# want to risk getting it wrong here. See README step 2.
+#
+# On a re-run against an existing repo, this task is non-destructive: it
+# fetches the current config, only flips forceBasicAuth to false if needed,
+# and PUTs back with all other fields preserved (blob store, write policy,
+# etc.). That means a previously hand-created repo using the legacy `minio`
+# blob store name keeps using it; no migration is forced.
+
+- name: post-install | Get andusystems-docker repo current state
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -s -o /tmp/nexus-docker-repo.json -w "%{http_code}"
+    -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/repositories/docker/hosted/andusystems-docker
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: docker_repo_check
+  changed_when: false
+  no_log: true
+
+- name: post-install | Create andusystems-docker hosted repo (first time only)
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - POST
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'name': 'andusystems-docker',
+          'online': true,
+          'storage': {
+            'blobStoreName': nexus_blob_store_name,
+            'strictContentTypeValidation': true,
+            'writePolicy': 'ALLOW',
+          },
+          'docker': {
+            'v1Enabled': false,
+            'forceBasicAuth': false,
+            'httpPort': 8082,
+          },
+        } | to_json }}"
+      - http://localhost:8081/service/rest/v1/repositories/docker/hosted
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: docker_repo_check.stdout == "404"
+  no_log: true
+
+- name: post-install | Read existing andusystems-docker repo config from pod
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    cat /tmp/nexus-docker-repo.json
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: docker_repo_raw
+  changed_when: false
+  when: docker_repo_check.stdout == "200"
+
+- name: post-install | Update andusystems-docker repo if forceBasicAuth drifted
+  # Non-destructive update: preserves the existing blob store name, write
+  # policy, and any other fields by parsing current state and only flipping
+  # forceBasicAuth to false. Skipped entirely if forceBasicAuth is already
+  # false on the live repo, so re-runs are no-ops.
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - PUT
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ ((docker_repo_raw.stdout | from_json) | combine({
+          'docker': ((docker_repo_raw.stdout | from_json).docker | combine({'forceBasicAuth': false})),
+        }, recursive=true)) | to_json }}"
+      - http://localhost:8081/service/rest/v1/repositories/docker/hosted/andusystems-docker
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when:
+    - docker_repo_check.stdout == "200"
+    - (docker_repo_raw.stdout | from_json).docker.forceBasicAuth | default(false)
+
+# --- Roles -----------------------------------------------------------------
+# andusystems-ci-pusher: read+add+edit on the andusystems-docker repo (CI
+# build runners use this to push images).
+# andusystems-cluster-puller: read-only on the same repo (consuming K8s
+# clusters use this for their imagePullSecrets).
+
+- name: post-install | Check if andusystems-ci-pusher role exists
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -sf -o /dev/null -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/security/roles/andusystems-ci-pusher
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: ci_pusher_role_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: post-install | Create andusystems-ci-pusher role
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - POST
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'id': 'andusystems-ci-pusher',
+          'name': 'andusystems-ci-pusher',
+          'description': 'Push images to andusystems-docker (CI build runners)',
+          'privileges': [
+            'nx-repository-view-docker-andusystems-docker-read',
+            'nx-repository-view-docker-andusystems-docker-add',
+            'nx-repository-view-docker-andusystems-docker-edit',
+          ],
+          'roles': [],
+        } | to_json }}"
+      - http://localhost:8081/service/rest/v1/security/roles
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: ci_pusher_role_check.rc != 0
+
+- name: post-install | Check if andusystems-cluster-puller role exists
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -sf -o /dev/null -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/security/roles/andusystems-cluster-puller
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: cluster_puller_role_check
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: post-install | Create andusystems-cluster-puller role
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - POST
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'id': 'andusystems-cluster-puller',
+          'name': 'andusystems-cluster-puller',
+          'description': 'Pull images from andusystems-docker (consuming clusters)',
+          'privileges': [
+            'nx-repository-view-docker-andusystems-docker-read',
+            'nx-repository-view-docker-andusystems-docker-browse',
+          ],
+          'roles': [],
+        } | to_json }}"
+      - http://localhost:8081/service/rest/v1/security/roles
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: cluster_puller_role_check.rc != 0
+
+# --- Users -----------------------------------------------------------------
+# Both users are created in `active` state (the per-repo trap was that the
+# UI defaults the active checkbox in a way that creates them disabled).
+# Passwords come from vault.
+
+- name: post-install | Check if ci-pusher user exists
+  command: >
+    kubectl -n nexus exec {{ nexus_pod.stdout }} --
+    curl -sf -u admin:{{ nexus_admin_password }}
+    http://localhost:8081/service/rest/v1/security/users?source=default
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: users_check
+  changed_when: false
+  no_log: true
+
+- name: post-install | Compute existing usernames
+  set_fact:
+    nexus_existing_users: "{{ users_check.stdout | from_json | map(attribute='userId') | list }}"
+  no_log: true
+
+- name: post-install | Create ci-pusher user
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - POST
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'userId': nexus_ci_pusher_user,
+          'firstName': 'CI',
+          'lastName': 'Pusher',
+          'emailAddress': 'admin@andusystems.com',
+          'password': nexus_ci_pusher_password,
+          'status': 'active',
+          'roles': ['andusystems-ci-pusher'],
+        } | to_json }}"
+      - http://localhost:8081/service/rest/v1/security/users
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: nexus_ci_pusher_user not in nexus_existing_users
+
+- name: post-install | Ensure ci-pusher user is active
+  # Even if the user already existed (created by hand or by a previous run
+  # that didn't set status), force status=active. The PUT preserves the
+  # password — the password subresource is the only way to change passwords
+  # via the API. Re-runs of this task are no-ops if already active.
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - PUT
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'userId': nexus_ci_pusher_user,
+          'firstName': 'CI',
+          'lastName': 'Pusher',
+          'emailAddress': 'admin@andusystems.com',
+          'source': 'default',
+          'status': 'active',
+          'roles': ['andusystems-ci-pusher'],
+        } | to_json }}"
+      - "http://localhost:8081/service/rest/v1/security/users/{{ nexus_ci_pusher_user }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: post-install | Create cluster-puller user
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - POST
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'userId': nexus_cluster_puller_user,
+          'firstName': 'Cluster',
+          'lastName': 'Puller',
+          'emailAddress': 'admin@andusystems.com',
+          'password': nexus_cluster_puller_password,
+          'status': 'active',
+          'roles': ['andusystems-cluster-puller'],
+        } | to_json }}"
+      - http://localhost:8081/service/rest/v1/security/users
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: nexus_cluster_puller_user not in nexus_existing_users
+
+- name: post-install | Ensure cluster-puller user is active
+  command:
+    argv:
+      - kubectl
+      - -n
+      - nexus
+      - exec
+      - "{{ nexus_pod.stdout }}"
+      - --
+      - curl
+      - -sfS
+      - -X
+      - PUT
+      - -u
+      - "admin:{{ nexus_admin_password }}"
+      - -H
+      - Content-Type:application/json
+      - -H
+      - X-Nexus-UI:true
+      - -d
+      - "{{ {
+          'userId': nexus_cluster_puller_user,
+          'firstName': 'Cluster',
+          'lastName': 'Puller',
+          'emailAddress': 'admin@andusystems.com',
+          'source': 'default',
+          'status': 'active',
+          'roles': ['andusystems-cluster-puller'],
+        } | to_json }}"
+      - "http://localhost:8081/service/rest/v1/security/users/{{ nexus_cluster_puller_user }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false

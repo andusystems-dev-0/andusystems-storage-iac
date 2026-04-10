@@ -1,0 +1,33 @@
+# apps/nexus/manifests/cert.yml
+#
+# Real Let's Encrypt cert for the Nexus public hostnames, issued via the
+# storage cluster's `letsencrypt` ClusterIssuer (DNS-01, Cloudflare). Used by
+# both the nexus-ui and nexus-docker-tls IngressRoutes (see ingress.yml).
+#
+# Why this exists: in-cluster clients (e.g. the management cluster's GitHub
+# Actions runner pods) talk to this Traefik over plain HTTPS, NOT through
+# Pangolin, so the cert that Traefik serves on the websecure entrypoint must
+# be valid for the hostname the client used. Without this cert, Traefik
+# served its built-in self-signed default and any client with TLS validation
+# (containerd, buildkit, anything that doesn't read dockerd's
+# insecure-registries flag) failed with x509 cert mismatch.
+#
+# Both hostnames are on a single Certificate so we only consume one DNS-01
+# challenge instead of two on every renewal.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nexus-tls
+  namespace: nexus
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: ingress-tls
+spec:
+  secretName: nexus-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  dnsNames:
+    - registry.andusystems.com
+    - nexus.andusystems.com
