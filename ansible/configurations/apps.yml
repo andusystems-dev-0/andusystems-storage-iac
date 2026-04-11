@@ -1,3 +1,4 @@
+- import_playbook: ./roles/metallb.yml
 - import_playbook: ./roles/cert-manager.yml
 - import_playbook: ./roles/pangolin-newt.yml
 - import_playbook: ./roles/kube-prometheus-stack.yml

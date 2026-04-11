@@ -7,14 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
-- Nexus Repository OSS deployment with private Docker registry (`andusystems-docker` hosted repository)
-- Nexus automated post-install configuration via REST API (Docker realm, repositories, roles, users)
-- Nexus service accounts: `ci-pusher` (read/write for CI) and `cluster-puller` (read-only for clusters)
-- Nexus S3 blob storage integration with MinIO (`nexus-blobs` bucket)
-- Nexus Let's Encrypt TLS certificates for public hostnames via cert-manager DNS-01
-- Nexus Traefik IngressRoutes for both public (Pangolin) and internal (direct HTTPS) access
-- Nexus admin password bootstrap automation via postStart lifecycle hook
-- MinIO pre-created `nexus-blobs` bucket for Nexus artifact storage
 - Added detailed per-component documentation to README for Alloy, Loki, Tempo, Prometheus, MinIO, Longhorn, MetalLB, cert-manager, and Pangolin Newt (2026-04-07)
 
 ### Fixed
@@ -22,7 +14,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Bumped Alloy resource limits to resolve OOMKilled pods (2026-04-05)
 
 ### Changed
-- Updated Nexus Ingress to support both HTTP and HTTPS entrypoints with X-Forwarded-Proto middleware
 - Updated MinIO service to LoadBalancer type for cross-cluster access (2026-03-17)
 - Disabled Alloy-managed node-exporter and kube-state-metrics deployments (using kube-prometheus-stack's instead) (2026-03-17)
 - Updated Alloy values for OTLP port mapping (2026-03-17)

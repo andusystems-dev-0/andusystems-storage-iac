@@ -19,7 +19,7 @@ ansible-galaxy collection install -r requirements.yml
 
 This installs:
 
-- `kubernetes.core` — used by all application roles to manage Kubernetes resources and Helm releases
+- `kubernetes.core` -- used by all application roles to manage Kubernetes resources and Helm releases
 
 ## Local Development Setup
 
@@ -75,7 +75,7 @@ ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass
 
 ### Apps only
 
-Skips VM provisioning and Kubernetes bootstrap — deploys applications to an existing cluster:
+Skips VM provisioning and Kubernetes bootstrap -- deploys applications to an existing cluster:
 
 ```bash
 ansible-playbook apps.yml -i ../inventory/storage/hosts.yml --ask-vault-pass
@@ -99,7 +99,6 @@ ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass 
 ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags tempo
 ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags alloy
 ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags metallb
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags nexus
 ```
 
 ### Dry run
@@ -117,15 +116,13 @@ Note: `--check` mode may not work correctly with all Kubernetes modules, but it 
 The `apps.yml` playbook deploys applications in a specific order due to dependencies:
 
 ```
-cert-manager → pangolin-newt → kube-prometheus-stack → minio → loki → tempo → alloy → nexus
+cert-manager  ->  pangolin-newt  ->  kube-prometheus-stack  ->  minio  ->  loki  ->  tempo  ->  alloy
 ```
 
 - **cert-manager** must be first (other apps may need TLS certificates)
-- **pangolin-newt** sets up the tunnel for external access
 - **kube-prometheus-stack** must precede Alloy (Alloy pushes metrics to Prometheus)
-- **MinIO** must precede Loki, Tempo, and Nexus (they use MinIO for S3 storage)
-- **Alloy** depends on all telemetry backends being available
-- **Nexus** is last (depends on MinIO for blob storage and cert-manager for TLS)
+- **MinIO** must precede Loki and Tempo (they use MinIO for S3 storage)
+- **Alloy** is last (it depends on all telemetry backends being available)
 
 ## Project Layout
 
@@ -135,9 +132,9 @@ Each role in `ansible/configurations/roles/` follows a consistent pattern:
 
 ```
 roles/<component>/
-├── defaults/main.yml    # Default variables (usually empty — secrets come from vault)
+├── defaults/main.yml    # Default variables (usually empty -- secrets come from vault)
 ├── tasks/
-│   ├── main.yml         # Entry point — imports install.yml with tags
+│   ├── main.yml         # Entry point -- imports install.yml with tags
 │   └── install.yml      # Actual installation logic
 ```
 
@@ -147,24 +144,10 @@ The top-level `roles/<component>.yml` is the playbook that includes the role.
 
 Each app in `apps/` contains:
 
-- **`values.yml`** — Helm chart values (required)
-- **`manifest.yml`** (optional) — Additional Kubernetes manifests (secrets, CRDs, MetalLB config)
-- **`manifests/`** (optional) — Directory of additional Kubernetes manifests (used by Nexus for deployment, ingress, TLS certs)
+- **`values.yml`** -- Helm chart values (required)
+- **`manifest.yml`** (optional) -- Additional Kubernetes manifests (secrets, CRDs, MetalLB config)
 
 Manifests use Jinja2 templating and are rendered by Ansible at deploy time. Secrets reference Ansible Vault variables.
-
-### Nexus role specifics
-
-The Nexus role has a two-phase deployment model:
-
-1. **Phase 1 (Bootstrap)** — Creates namespace, applies secrets (MinIO credentials, admin bootstrap password), and deploys the workload manifests
-2. **Phase 2 (Post-install)** — Waits for the Nexus pod to become API-ready, then configures:
-   - Docker Bearer Token realm activation
-   - `andusystems-docker` hosted Docker repository with S3 blob store
-   - Service account roles (`ci-pusher`, `cluster-puller`)
-   - Service account users with vault-sourced passwords
-
-All post-install API calls are idempotent — they check for existing resources before creating.
 
 ## Environment Variables
 
@@ -195,38 +178,28 @@ export KUBECONFIG=<path-to-kubeconfig>
 kubectl get pods -A
 
 # Check Prometheus targets
-kubectl -n monitoring port-forward svc/storage-kube-prometheus-prometheus <local-port>:<prometheus-port>
-# Then open http://localhost:<local-port>/targets
+kubectl -n monitoring port-forward svc/storage-kube-prometheus-prometheus 9090:9090
+# Then open http://localhost:9090/targets
 
 # Verify Loki is receiving logs
 kubectl -n loki logs -l app.kubernetes.io/name=loki --tail=20
 
 # Verify MinIO buckets exist
-kubectl -n minio port-forward svc/minio-console <local-port>:<console-port>
-# Then open http://localhost:<local-port>
-
-# Verify Nexus is running and responsive
-kubectl -n nexus get pods
-kubectl -n nexus port-forward svc/nexus <local-port>:<nexus-ui-port>
-# Then open http://localhost:<local-port>
-
-# Test Docker registry access
-kubectl -n nexus port-forward svc/nexus-docker <local-port>:<docker-port>
-docker login localhost:<local-port>
+kubectl -n minio port-forward svc/minio-console 9001:9001
+# Then open http://localhost:9001
 ```
 
 ## Adding a New Application
 
 1. Create a values file at `apps/<app-name>/values.yml`
 2. Optionally create a `manifest.yml` for additional resources (secrets, CRDs)
-3. Optionally create a `manifests/` directory for more complex deployments (workloads, ingress, TLS certs)
-4. Create an Ansible role at `ansible/configurations/roles/<app-name>/`:
-   - `defaults/main.yml` — default variables (if any)
-   - `tasks/main.yml` — imports install.yml with appropriate tags
-   - `tasks/install.yml` — creates namespace, applies manifests, installs Helm chart
-5. Create the role playbook at `ansible/configurations/roles/<app-name>.yml`
-6. Add the playbook import to `ansible/configurations/apps.yml` in the correct dependency position
-7. If the app needs secrets, add vault variables to `vars.yml` and update `vault.example`
+3. Create an Ansible role at `ansible/configurations/roles/<app-name>/`:
+   - `defaults/main.yml` -- default variables (if any)
+   - `tasks/main.yml` -- imports install.yml with appropriate tags
+   - `tasks/install.yml` -- creates namespace, applies manifests, installs Helm chart
+4. Create the role playbook at `ansible/configurations/roles/<app-name>.yml`
+5. Add the playbook import to `ansible/configurations/apps.yml` in the correct dependency position
+6. If the app needs secrets, add vault variables to `vars.yml` and update `vault.example`
 
 ## Debugging
 
@@ -258,7 +231,3 @@ helm list -A
 | Worker nodes not joining | SSH connectivity or kubeadm token expired | Check SSH access; re-run kubernetes role |
 | Prometheus PVC pending | Longhorn not ready or no available nodes | Verify Longhorn pods are running; check node storage |
 | MinIO health check failing | Pod still starting or persistence issue | Check pod events with `kubectl describe`; verify Longhorn volume |
-| Nexus slow to start | JVM warmup takes several minutes | Wait for startup probe to pass (up to 5 min); check pod events |
-| Nexus post-install fails | Pod not API-ready or stale admin password | Check Nexus pod logs; verify `nexus-admin-bootstrap` secret value |
-| Docker push/pull fails | Docker realm not activated or ingress misconfigured | Re-run nexus tag; verify realm config via Nexus admin UI |
-| Nexus Docker auth 401 | Bearer token realm not in active realm list | Re-run nexus role; check `/service/rest/v1/security/realms/active` |

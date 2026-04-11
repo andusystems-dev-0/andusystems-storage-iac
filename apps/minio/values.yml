@@ -42,16 +42,15 @@ resources:
 service:
   type: LoadBalancer
   port: 9000
-  # Optional: Annotate for specific LB behavior
   annotations:
-    # If using AWS:
-    # service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    # service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-    
-    # If using MetalLB in bare-metal:
+    # Pin to a specific IP from the storage MetalLB pool (10.238.40.20-120).
+    # MUST NOT collide with 10.238.40.21, which is reserved for storage-traefik
+    # (see apps/nexus/manifests/ingress.yml — the runner hostAliases and the
+    # Pangolin private resources both pin to .21). Without this annotation,
+    # MetalLB picked .21 first-come-first-served and starved storage-traefik
+    # of an external IP, breaking docker login from CI.
+    metallb.io/loadBalancerIPs: "10.238.40.25"
     metallb.universe.tf/allow-shared-ip: "minio-s3"
-    
-    # If you want to preserve client IP
     service.beta.kubernetes.io/external-traffic: "Local"
 
 # Optional: Add a second service for MinIO Console (Web UI)
