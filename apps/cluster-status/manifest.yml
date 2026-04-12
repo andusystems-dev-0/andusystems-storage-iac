@@ -1,0 +1,145 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-status-nginx
+  namespace: cluster-status
+data:
+  default.conf: |
+    server {
+      listen 8080;
+
+      location = /healthz {
+        add_header Content-Type text/plain always;
+        add_header Access-Control-Allow-Origin '*' always;
+        add_header Access-Control-Allow-Methods 'GET, OPTIONS' always;
+        return 200 'ok';
+      }
+
+      location / {
+        return 404;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-status
+  namespace: cluster-status
+  labels:
+    app: cluster-status
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-status
+  template:
+    metadata:
+      labels:
+        app: cluster-status
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: config
+          configMap:
+            name: cluster-status-nginx
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: nginx-cache
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cluster-status
+  namespace: cluster-status
+  labels:
+    app: cluster-status
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: cluster-status
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: cluster-status
+  namespace: cluster-status
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`status-storage.andusystems.com`)
+      kind: Rule
+      services:
+        - name: cluster-status
+          port: 80
+  tls:
+    secretName: cluster-status-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cluster-status-tls
+  namespace: cluster-status
+spec:
+  secretName: cluster-status-tls
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+  dnsNames:
+    - status-storage.andusystems.com
