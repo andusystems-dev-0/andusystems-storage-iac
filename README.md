@@ -1,266 +1,170 @@
 # andusystems-storage
 
-Infrastructure-as-code for the **storage cluster** -- a dedicated Kubernetes cluster providing persistent storage, S3-compatible object storage, and a full observability pipeline within a multi-cluster homelab environment.
+> IaC for the dedicated storage cluster — distributed block storage, S3-compatible object storage, and a full observability pipeline within the andusystems homelab.
 
 ## Purpose
 
-This repository automates the full lifecycle of the storage cluster:
+This repository automates the full lifecycle of a dedicated storage cluster: VM provisioning on Proxmox via Terraform, Kubernetes bootstrap via kubeadm with Flannel CNI, and application deployment via Ansible roles. The cluster provides distributed block storage (Longhorn), S3-compatible object storage (MinIO), a Docker image registry (Nexus), and a complete observability pipeline (Prometheus, Loki, Tempo, Alloy). It acts as a spoke in a hub-spoke observability model — telemetry backends run here while the hub cluster hosts Grafana for visualization.
 
-- **VM provisioning** via Terraform on Proxmox
-- **Kubernetes bootstrap** via kubeadm with Flannel CNI
-- **Application deployment** via Ansible roles that apply Helm values and Kubernetes manifests
+## At a glance
 
-The storage cluster sits on its own network segment, isolated from management, DMZ, and public-facing clusters. It acts as a **spoke** in a hub-spoke observability model -- telemetry backends run here, while the hub cluster provides the Grafana visualization layer.
+| Field | Value |
+|---|---|
+| Type | IaC cluster |
+| Network | Dedicated storage network segment, isolated from management and public-facing clusters |
+| Role | spoke |
+| Primary stack | Terraform + Ansible + kubeadm |
+| Deployed by | manual Ansible playbook run |
+| Status | production |
 
 ## Components
 
-| Component | Role | Namespace |
+| Component | Purpose | Namespace |
 |---|---|---|
-| **Longhorn** | Distributed block storage (default StorageClass, 3-replica) | `longhorn-system` |
-| **MinIO** | S3-compatible object storage for logs and traces | `minio` |
-| **Prometheus** (kube-prometheus-stack) | Metrics collection, alerting, remote-write receiver | `monitoring` |
-| **Loki** | Log aggregation (single-binary mode, MinIO backend) | `loki` |
-| **Tempo** | Distributed tracing (OTLP receivers, MinIO backend) | `tempo` |
-| **Alloy** | Telemetry collector -- metrics, logs, traces, and events | `alloy` |
-| **cert-manager** | TLS certificate automation via Let's Encrypt / Cloudflare DNS-01 | `cert-manager` |
-| **MetalLB** | Bare-metal LoadBalancer (L2 advertisement) | `metallb` |
-| **Pangolin Newt** | Tunnel agent for external connectivity | `newt` |
+| Longhorn | Distributed block storage, default StorageClass, 3-replica replication | `longhorn-system` |
+| MinIO | S3-compatible object storage backend for logs, traces, and the registry | `minio` |
+| kube-prometheus-stack | Metrics collection, Alertmanager, node-exporter, kube-state-metrics | `monitoring` |
+| Loki | Log aggregation (single-binary mode, MinIO backend, 30-day retention) | `loki` |
+| Tempo | Distributed tracing — OTLP receivers plus span metrics generation | `tempo` |
+| Alloy | Unified telemetry collector: metrics, logs, traces, and Kubernetes events | `alloy` |
+| Nexus | Docker image registry and artifact store (MinIO S3 blob store backend) | `nexus` |
+| MetalLB | Bare-metal L2 LoadBalancer for service exposure | `metallb` |
+| cert-manager | TLS automation via Let's Encrypt and Cloudflare DNS-01 | `cert-manager` |
+| Pangolin Newt | Tunnel agent for external connectivity to the hub network | `newt` |
+| cluster-status | Health-check endpoint for cluster status monitoring | `cluster-status` |
 
-### Alloy
+## Architecture
 
-[Grafana Alloy](https://grafana.com/docs/alloy/) is deployed as four specialized instances, each handling a distinct telemetry signal:
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Storage Cluster                           │
+│                                                                  │
+│  ┌─────────────┐   ┌─────────────┐   ┌──────────────────────┐   │
+│  │ cert-manager │   │   MetalLB   │   │    Pangolin Newt     │   │
+│  │  (TLS certs) │   │ (L2 LB IPs) │   │   (ext. tunnel)     │   │
+│  └─────────────┘   └─────────────┘   └──────────────────────┘   │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Storage Layer                                             │  │
+│  │  ┌──────────────────────┐  ┌──────────────────────────┐   │  │
+│  │  │       Longhorn        │  │          MinIO            │   │  │
+│  │  │  (block PVCs, 3-rep)  │  │  (loki/tempo/nexus S3)   │   │  │
+│  │  └──────────────────────┘  └──────────────────────────┘   │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Observability Pipeline                                    │  │
+│  │  Alloy (metrics · logs · traces · events)                  │  │
+│  │     │ metrics        │ logs         │ traces               │  │
+│  │     ▼                ▼              ▼                      │  │
+│  │  Prometheus        Loki           Tempo                   │  │
+│  │  (exposed via MetalLB → hub Grafana queries remotely)      │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Registry: Nexus (Docker registry, MinIO blob store)       │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-| Instance | Mode | Function |
-|---|---|---|
-| `alloy-metrics` | DaemonSet | Scrapes kubelet, cAdvisor, kube-state-metrics, node-exporter, and annotated pods; remote-writes to Prometheus |
-| `alloy-logs` | DaemonSet | Collects pod stdout/stderr via the Kubernetes API; pushes to Loki |
-| `alloy-singleton` | Single replica | Watches Kubernetes events; pushes to Loki |
-| `alloy-receiver` | Single replica | Accepts OTLP traces (gRPC :4317, HTTP :4318) and metrics from instrumented applications; forwards traces to Tempo and metrics to Prometheus |
+Alloy collects telemetry from all cluster workloads and routes it to Prometheus, Loki, and Tempo. Durable data is stored in MinIO S3. MetalLB LoadBalancer IPs expose Prometheus, Loki, and Tempo so the hub Grafana cluster can query them remotely. See [docs/architecture.md](docs/architecture.md) for the full data flow and design decisions.
 
-The metrics and logs instances tolerate control-plane taints so every node is covered. Node-exporter and kube-state-metrics sub-charts are disabled in Alloy because kube-prometheus-stack already deploys them.
-
-### Loki
-
-[Grafana Loki](https://grafana.com/docs/loki/) runs in **single-binary mode** (all components in one process) with a MinIO S3 backend:
-
-- **Schema**: TSDB v13 with 24h index period
-- **Retention**: 30 days
-- **Ingestion rate**: 8 MB/s (burst 16 MB/s)
-- **Storage buckets**: `loki-data` (chunks), `loki-ruler` (ruler config)
-- **Persistence**: 10Gi Longhorn PVC for WAL and local index
-
-Auth is disabled (single-tenant). The service is exposed as a LoadBalancer so the hub Grafana cluster can query logs directly.
-
-### Tempo
-
-[Grafana Tempo](https://grafana.com/docs/tempo/) provides distributed tracing with OTLP receivers and a MinIO S3 backend:
-
-- **Receivers**: OTLP gRPC (:4317) and HTTP (:4318)
-- **Storage bucket**: `tempo-data`
-- **Span metrics**: Enabled -- generates RED (rate, error, duration) metrics from traces and remote-writes them to Prometheus, giving service-level metrics without app-side instrumentation
-- **Persistence**: 10Gi Longhorn PVC for WAL and local cache
-
-Exposed as a LoadBalancer for cross-cluster trace queries.
-
-### Prometheus (kube-prometheus-stack)
-
-The [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) deploys Prometheus, Alertmanager, node-exporter, and kube-state-metrics:
-
-- **Retention**: 7 days (15Gi Longhorn PVC)
-- **Remote-write receiver**: Enabled -- Alloy and Tempo push metrics via the `/api/v1/write` endpoint
-- **External labels**: `cluster: storage`, `vlan: "40"` for multi-cluster identification
-- **Grafana**: Disabled -- this is a spoke cluster; Grafana runs on the hub
-
-Prometheus selectors are set to nil, meaning ServiceMonitors and PodMonitors from all namespaces are scraped. The service is exposed as a LoadBalancer on port 9090.
-
-### MinIO
-
-[MinIO](https://min.io/) runs in **standalone mode** (single-node) providing S3-compatible object storage:
-
-- **Persistence**: 20Gi Longhorn PVC (durability via Longhorn 3-replica replication)
-- **Pre-created buckets**: `loki-data`, `loki-ruler`, `tempo-data`
-- **Services**: API on port 9000 (LoadBalancer), Console on port 9001 (LoadBalancer)
-
-Loki and Tempo connect to MinIO via the in-cluster endpoint `minio.minio.svc.cluster.local:9000`.
-
-### Longhorn
-
-[Longhorn](https://longhorn.io/) is the sole StorageClass, providing distributed block storage across all worker nodes:
-
-- **Default replica count**: 3 (across 5 workers)
-- **Storage overprovisioning**: 200% with a 15% minimum available threshold
-- **Data path**: `/var/lib/longhorn`
-- **UI**: Disabled (headless mode)
-
-All stateful workloads (Prometheus, Alertmanager, Loki, Tempo, MinIO) use Longhorn PVCs.
-
-### MetalLB
-
-[MetalLB](https://metallb.universe.tf/) provides bare-metal LoadBalancer services using Layer 2 (ARP) advertisement:
-
-- **IP pool**: Configured via vault (`metallb_ip_range`)
-- **Exposed services**: Prometheus (:9090), Loki (:3100), Tempo (:4317/:4318), MinIO (:9000/:9001)
-
-### cert-manager
-
-[cert-manager](https://cert-manager.io/) automates TLS certificate issuance via Let's Encrypt with Cloudflare DNS-01 challenges:
-
-- **ClusterIssuer**: Let's Encrypt production ACME
-- **DNS solver**: Cloudflare API (token stored in vault)
-- **Nameservers**: 1.1.1.1, 8.8.8.8 (DNS-01 only)
-
-### Pangolin Newt
-
-[Pangolin Newt](https://docs.fossorial.io/) is a tunnel agent that provides external connectivity to the storage cluster from the hub/management network. Credentials (endpoint, ID, secret) are injected from vault.
-
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
-- Ansible (with `kubernetes.core` collection)
-- Terraform
-- `kubectl`
-- SSH access to target nodes
-- An Ansible Vault file with secrets (see `ansible/inventory/storage/group_vars/all/vault.example`)
+| Tool | Version | Purpose |
+|---|---|---|
+| Ansible | 2.15+ | Orchestrates provisioning and deployment |
+| Terraform | 1.5+ | Provisions VMs on Proxmox |
+| kubectl | 1.31+ | Kubernetes CLI for verification and debugging |
+| ansible-vault | — | Encrypts and decrypts the secrets file |
 
-### 1. Install Ansible dependencies
+### Deploy / run
 
 ```bash
 cd ansible
 ansible-galaxy collection install -r requirements.yml
-```
-
-### 2. Configure secrets
-
-Copy the vault example and fill in your values:
-
-```bash
-cp ansible/inventory/storage/group_vars/all/vault.example \
-   ansible/inventory/storage/group_vars/all/vault
-```
-
-Encrypt the vault file:
-
-```bash
-ansible-vault encrypt ansible/inventory/storage/group_vars/all/vault
-```
-
-### 3. Deploy the full stack
-
-```bash
-cd ansible/configurations
+cp inventory/storage/group_vars/all/vault.example \
+   inventory/storage/group_vars/all/vault
+# Populate vault with your values, then encrypt
+ansible-vault encrypt inventory/storage/group_vars/all/vault
+cd configurations
 ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass
 ```
 
-This runs three stages in order:
+See [docs/development.md](docs/development.md) for apps-only deployment, per-component tags, dry-run mode, and post-deployment verification.
 
-1. **VMs** -- provisions virtual machines via Terraform on Proxmox
-2. **Kubernetes** -- bootstraps the cluster with kubeadm and Flannel CNI
-3. **Apps** -- deploys all applications in dependency order
+## Configuration
 
-### Deploy apps only (existing cluster)
+| Key | Required | Description |
+|---|---|---|
+| `repo_root` | Yes | Absolute path to this repo on the Ansible controller |
+| `ssh_user` | Yes | SSH username for node access |
+| `ssh_key_path` | Yes | Path to the SSH private key |
+| `control_plane_ip` | Yes | IP of the control plane node |
+| `worker_ips` | Yes | List of worker node IPs |
+| `kubernetes_version` | Yes | Kubernetes version to install (e.g. `1.31`) |
+| `pod_network_cidr` | Yes | CIDR for the Flannel pod network |
+| `kubeconfig` | Yes | Path where kubeconfig will be written after bootstrap |
+| `metallb_ip_range` | Yes | IP range for the MetalLB address pool |
+| `cloudflare_api_token` | Yes | Cloudflare API token for DNS-01 challenges |
+| `letsencrypt_email` | Yes | Email for Let's Encrypt registration |
+| `pangolin_endpoint` | Yes | Pangolin tunnel server endpoint |
+| `newt_id` / `newt_secret` | Yes | Pangolin Newt authentication credentials |
+| `minio_root_user` / `minio_root_password` | Yes | MinIO root credentials |
+| `nexus_admin_password` | Yes | Initial Nexus admin password |
+| `nexus_ci_pusher_user` / `nexus_ci_pusher_password` | Yes | CI/CD image push credentials |
+| `nexus_cluster_puller_user` / `nexus_cluster_puller_password` | Yes | Read-only image pull credentials for consuming clusters |
 
-```bash
-ansible-playbook apps.yml -i ../inventory/storage/hosts.yml --ask-vault-pass
-```
+All values live in Ansible Vault (`ansible/inventory/storage/group_vars/all/vault`). Use `vault.example` as a template — never commit the populated vault file.
 
-### Deploy individual components
-
-Use Ansible tags to target specific roles:
-
-```bash
-# Infrastructure
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags vms
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags kubernetes
-
-# Applications
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags cert-manager
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags pangolin-newt
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags kube-prometheus-stack
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags minio
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags loki
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags tempo
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags alloy
-ansible-playbook storage.yml -i ../inventory/storage/hosts.yml --ask-vault-pass --tags metallb
-```
-
-## Configuration Reference
-
-All sensitive values are stored in Ansible Vault. Required configuration keys:
-
-| Key | Description |
-|---|---|
-| `repo_root` | Absolute path to this repository on the Ansible controller |
-| `ssh_user` | SSH username for node access |
-| `ssh_key_path` | Path to the SSH private key |
-| `control_plane_ip` | IP address of the control plane node |
-| `worker_ips` | List of worker node IP addresses |
-| `kubernetes_version` | Kubernetes version to install (e.g. `1.31`) |
-| `pod_network_cidr` | CIDR for the Flannel pod network |
-| `kubeconfig` | Path where kubeconfig will be written |
-| `cloudflare_api_token` | Cloudflare API token for DNS-01 challenges |
-| `letsencrypt_email` | Email for Let's Encrypt registration |
-| `pangolin_endpoint` | Pangolin server endpoint |
-| `newt_id` / `newt_secret` | Pangolin Newt authentication credentials |
-| `metallb_ip_range` | IP range for MetalLB address pool |
-| `grafana_admin_user` / `grafana_admin_password` | Grafana credentials (used by Prometheus stack) |
-| `minio_root_user` / `minio_root_password` | MinIO root credentials |
-
-## Architecture Summary
-
-The cluster follows a layered design:
-
-- **Infrastructure layer**: Terraform provisions Proxmox VMs; kubeadm bootstraps Kubernetes with Flannel CNI
-- **Storage layer**: Longhorn provides block PVCs for all stateful workloads; MinIO provides S3 buckets for Loki and Tempo
-- **Observability layer**: Alloy collects metrics, logs, traces, and events from the cluster and ships them to Prometheus, Loki, and Tempo respectively
-- **Networking layer**: MetalLB exposes services via L2 LoadBalancer IPs; cert-manager handles TLS via Cloudflare DNS-01; Pangolin Newt provides tunnel connectivity
-
-Grafana is **not** deployed on this cluster. The hub/monitoring cluster queries Prometheus via remote-write and accesses Loki/Tempo via their LoadBalancer endpoints.
-
-## Repository Structure
+## Repository layout
 
 ```
 .
 ├── ansible/
-│   ├── ansible.cfg                     # Ansible configuration
-│   ├── requirements.yml                # Galaxy collection dependencies
+│   ├── ansible.cfg                      # Ansible settings and log path
+│   ├── requirements.yml                 # Galaxy collection dependencies
 │   ├── configurations/
-│   │   ├── storage.yml                 # Full-stack playbook (VMs -> K8s -> Apps)
-│   │   ├── apps.yml                    # Apps-only playbook
-│   │   └── roles/
-│   │       ├── vms/                    # VM provisioning via Terraform
-│   │       ├── kubernetes/             # kubeadm cluster bootstrap
-│   │       ├── cert-manager/           # TLS certificate management
-│   │       ├── pangolin-newt/          # Tunnel agent deployment
-│   │       ├── kube-prometheus-stack/  # Prometheus, Alertmanager, exporters
-│   │       ├── minio/                  # S3-compatible object storage
-│   │       ├── loki/                   # Log aggregation
-│   │       ├── tempo/                  # Distributed tracing
-│   │       ├── alloy/                  # Telemetry collector
-│   │       └── metallb/                # Bare-metal load balancer
-│   └── inventory/
-│       └── storage/
-│           ├── hosts.yml               # Inventory (control plane + workers)
-│           └── group_vars/all/
-│               ├── vars.yml            # Variable definitions (references vault)
-│               └── vault.example       # Template for secrets
-├── apps/
-│   ├── alloy/values.yml                # Grafana Alloy collector config
-│   ├── cert-manager/                   # cert-manager values + ClusterIssuer
-│   ├── kube-prometheus-stack/values.yml # Prometheus operator stack config
-│   ├── loki/                           # Loki values + MinIO credentials
-│   ├── longhorn/                       # Longhorn storage values
-│   ├── metallb/                        # MetalLB IPAddressPool manifest
-│   ├── minio/                          # MinIO values + credentials
-│   ├── pangolin-newt/                  # Newt values + credentials
-│   └── tempo/                          # Tempo values + MinIO credentials
-└── docs/
-    ├── architecture.md                 # Component diagram, data flows, design decisions
-    └── development.md                  # Local setup, prerequisites, workflow
+│   │   ├── storage.yml                  # Full-stack playbook (VMs → K8s → Apps)
+│   │   ├── apps.yml                     # Apps-only playbook
+│   │   └── roles/                       # Per-component Ansible roles
+│   │       ├── vms/                     # Terraform VM provisioning on Proxmox
+│   │       ├── kubernetes/              # kubeadm cluster bootstrap + Flannel
+│   │       ├── metallb/                 # L2 bare-metal load balancer
+│   │       ├── cert-manager/            # TLS certificate automation
+│   │       ├── pangolin-newt/           # External tunnel agent
+│   │       ├── kube-prometheus-stack/   # Prometheus operator stack
+│   │       ├── minio/                   # S3-compatible object storage
+│   │       ├── loki/                    # Log aggregation
+│   │       ├── tempo/                   # Distributed tracing
+│   │       ├── alloy/                   # Unified telemetry collector
+│   │       └── nexus/                   # Docker registry + artifact store
+│   └── inventory/storage/
+│       ├── hosts.yml                    # Control plane and worker node inventory
+│       └── group_vars/all/
+│           ├── vars.yml                 # Variable definitions (references vault)
+│           └── vault.example            # Secrets template
+└── apps/                                # Helm values and Kubernetes manifests
+    ├── alloy/values.yml                 # Grafana Alloy collector configuration
+    ├── cert-manager/                    # cert-manager values + ClusterIssuer manifest
+    ├── cluster-status/manifest.yml      # Health-check endpoint manifest
+    ├── kube-prometheus-stack/values.yml # Prometheus operator stack configuration
+    ├── loki/                            # Loki values + MinIO credential manifest
+    ├── longhorn/values.yml              # Longhorn storage class configuration
+    ├── minio/                           # MinIO values + bucket initialization
+    └── tempo/                           # Tempo values + MinIO credential manifest
 ```
 
-## Further Documentation
+## Related repos
 
-- [Architecture](docs/architecture.md) -- component diagram, data flows, and design decisions
-- [Development Guide](docs/development.md) -- local setup, prerequisites, and workflow
-- [Changelog](CHANGELOG.md) -- version history
+| Repo | Relation |
+|---|---|
+| andusystems-management | Hub cluster — Grafana queries Prometheus, Loki, and Tempo on this cluster |
+
+## Further documentation
+
+- [Architecture](docs/architecture.md) — component diagram, data flows, design decisions
+- [Development](docs/development.md) — local setup, deployment commands, debugging
+- [Changelog](CHANGELOG.md) — release history
