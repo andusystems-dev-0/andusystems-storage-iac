@@ -113,6 +113,22 @@ spec:
   selector:
     app: cluster-status
 ---
+# Restrict /healthz to the portfolio cluster's node CIDR. The portfolio
+# cluster runs the cluster-status proxy that fans out to each cluster's
+# /healthz endpoint; no other source has any business hitting this path.
+# Cross-VLAN routing means the source IP arriving here is the portfolio
+# node IP (no SNAT in the L3 hop), so a /24 allowlist on 10.238.80.0/24
+# is a sufficient ACL.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: cluster-status-portfolio-only
+  namespace: cluster-status
+spec:
+  ipAllowList:
+    sourceRange:
+      - 10.238.80.0/24
+---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -123,8 +139,11 @@ spec:
     - web
     - websecure
   routes:
-    - match: Host(`status-storage.andusystems.com`)
+    - match: Host(`status-storage.andusystems.com`) && Path(`/healthz`)
       kind: Rule
+      middlewares:
+        - name: cluster-status-portfolio-only
+          namespace: cluster-status
       services:
         - name: cluster-status
           port: 80
