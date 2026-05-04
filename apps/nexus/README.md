@@ -196,12 +196,12 @@ from Nexus. The `cluster-puller` password will be referenced by an
 Pangolin handles external DNS, TLS termination, and the public hostname. You
 need two **private resources** in Pangolin, both pointing at the storage
 cluster's Traefik LoadBalancer IP (`{{ storage_traefik_server_ip }}` in the
-management vault, currently `10.238.40.21`):
+management vault, currently `10.238.40.20`):
 
 | Pangolin resource | Public hostname | Internal target |
 |---|---|---|
-| Nexus UI | `nexus.andusystems.com` | `http://10.238.40.21` |
-| Nexus Docker registry | `registry.andusystems.com` | `http://10.238.40.21` |
+| Nexus UI | `nexus.andusystems.com` | `http://10.238.40.20` |
+| Nexus Docker registry | `registry.andusystems.com` | `http://10.238.40.20` |
 
 The IngressRoutes in `apps/nexus/manifests/ingress.yml` handle the Host-header
 routing inside the storage cluster — Traefik dispatches to the right Service
