@@ -1,6 +1,6 @@
 # andusystems-storage
 
-> IaC for the dedicated storage cluster — distributed block storage, S3-compatible object storage, and a full observability pipeline within the andusystems homelab.
+> IaC for the dedicated storage cluster: Distributed block storage, S3-compatible object storage, and a full observability pipeline within the andusystems homelab.
 
 ## Purpose
 
