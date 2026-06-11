@@ -81,6 +81,24 @@
     - br_netfilter
   changed_when: false
 
+- name: install | Configure multipath to blacklist Longhorn SCSI devices
+  ansible.builtin.copy:
+    content: |
+      defaults {
+          find_multipaths no
+      }
+      blacklist {
+          devnode "^sd[a-z0-9]+"
+      }
+    dest: /etc/multipath.conf
+    mode: '0644'
+
+- name: install | Reload multipathd
+  ansible.builtin.systemd:
+    name: multipathd
+    state: reloaded
+  ignore_errors: true
+
 - name: install | Configure sysctl for Kubernetes
   ansible.builtin.copy:
     content: |
