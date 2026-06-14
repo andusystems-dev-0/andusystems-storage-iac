@@ -43,6 +43,13 @@ newt_secret: "{{ vault_newt_secret }}"
 
 metallb_ip_range: "{{ vault_metallb_ip_range }}"
 
+# Internal DNS — Pi-hole on the networking cluster. Resolves internal
+# andusystems.com hostnames (registry, argocd, forgejo, …) directly to
+# their cluster Traefik IPs instead of going through Pangolin. Falls back
+# to public resolvers for everything else.
+cluster_dns: "{{ vault_cluster_dns | default('10.238.30.50') }}"
+cluster_dns_fallback: "{{ vault_cluster_dns_fallback | default('1.1.1.1 8.8.8.8') }}"
+
 homepage_url: "{{ vault_homepage_url }}"
 
 grafana_admin_user: "{{ vault_grafana_admin_user }}"

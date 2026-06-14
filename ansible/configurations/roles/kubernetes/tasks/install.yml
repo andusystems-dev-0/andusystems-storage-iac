@@ -29,6 +29,32 @@
     cmd: swapoff -a
   changed_when: true
 
+# Point systemd-resolved at the Pi-hole DNS on the networking cluster
+# (10.238.30.50 by default). Without this, nodes can't resolve internal
+# andusystems.com hostnames like registry.andusystems.com — public DNS
+# routes those through Pangolin, which isn't reachable from inside cluster
+# pod networks or from the kubelet's image-pull path.
+- name: install | Configure systemd-resolved to use Pi-hole
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/resolved.conf
+    regexp: '^#?{{ item.key }}='
+    line: '{{ item.key }}={{ item.value }}'
+    state: present
+  loop:
+    - { key: 'DNS',         value: '{{ cluster_dns }}' }
+    - { key: 'FallbackDNS', value: '{{ cluster_dns_fallback }}' }
+  become: true
+  register: resolved_conf
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: install | Restart systemd-resolved if config changed
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: restarted
+  become: true
+  when: resolved_conf is changed
+
 - name: install | Add Kubernetes apt key
   ansible.builtin.apt_key:
     url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
@@ -221,6 +247,36 @@
   run_once: true
   environment:
     KUBECONFIG: "/home/{{ ssh_user }}/.kube/config"
+
+# Add a CoreDNS stub zone for andusystems.com so internal hostnames always
+# resolve through Pi-hole, never through the public fallback resolvers
+# (1.1.1.1, 8.8.8.8). Without this, CoreDNS's `forward . /etc/resolv.conf`
+# round-robins between Pi-hole and the fallbacks — fallbacks return NXDOMAIN
+# for andusystems.com, which CoreDNS caches for 30s, causing intermittent
+# failures from inside pods (e.g. ImagePullBackOff on Nexus pulls).
+- name: install | Patch CoreDNS with andusystems.com stub zone (idempotent)
+  ansible.builtin.shell: |
+    set -e
+    CURRENT=$(kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
+    if echo "$CURRENT" | grep -q 'andusystems.com:53'; then
+      echo unchanged
+      exit 0
+    fi
+    NEW="andusystems.com:53 {
+        errors
+        cache 30
+        forward . {{ cluster_dns }}
+    }
+    ${CURRENT}"
+    kubectl -n kube-system create cm coredns --from-literal=Corefile="$NEW" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n kube-system rollout restart deploy coredns
+    echo patched
+  run_once: true
+  delegate_to: "{{ groups['controllers'][0] }}"
+  environment:
+    KUBECONFIG: "/home/{{ ssh_user }}/.kube/config"
+  register: coredns_patch
+  changed_when: coredns_patch.stdout == "patched"
 
 - name: install | Fetch kubeconfig to local machine
   ansible.builtin.fetch:
