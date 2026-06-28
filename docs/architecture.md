@@ -16,8 +16,8 @@ The cluster operates on a dedicated network segment, isolated from management, D
 │                           Storage Cluster                                │
 │                                                                          │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐  │
-│  │  cert-manager    │  │    MetalLB      │  │     Pangolin Newt       │  │
-│  │  (TLS via ACME)  │  │  (L2 LB IPs)   │  │  (tunnel to hub net)    │  │
+│  │  cert-manager   │  │    MetalLB      │  │     Pangolin Newt       │  │
+│  │  (TLS via ACME) │  │  (L2 LB IPs)   │  │  (tunnel to hub net)    │  │
 │  └─────────────────┘  └────────┬────────┘  └─────────────────────────┘  │
 │                                │ LoadBalancer IPs                        │
 │  ┌─────────────────────────────▼──────────────────────────────────────┐  │
