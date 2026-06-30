@@ -4,7 +4,7 @@
 
 ## Purpose
 
-This repository automates the full lifecycle of a dedicated storage cluster: VM provisioning on Proxmox via Terraform, Kubernetes bootstrap via kubeadm with Flannel CNI, and application deployment via Ansible roles. The cluster provides distributed block storage (Longhorn), S3-compatible object storage (MinIO), a Docker image registry (Nexus), and a complete observability pipeline (Prometheus, Loki, Tempo, Alloy). It acts as a spoke in a hub-spoke observability model — telemetry backends run here while the hub cluster hosts Grafana for visualization.
+This repository automates the full lifecycle of a dedicated storage cluster: VM provisioning on Proxmox via Terraform, Kubernetes bootstrap with Flannel CNI, and application deployment via Ansible roles. The cluster provides distributed block storage (Longhorn), S3-compatible object storage (MinIO), a Docker image registry (Nexus), and a complete observability pipeline (Prometheus, Loki, Tempo, Alloy). It acts as a spoke in a hub-spoke observability model — telemetry backends run here while the hub cluster hosts Grafana for visualization.
 
 ## At a glance
 
