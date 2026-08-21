@@ -5,7 +5,7 @@ tfvars_file: "{{ vault_tfvars_file }}"
 apps_dir: "{{ vault_apps_dir }}"
 
 # SSH connection settings
-ssh_user: "{{ vault_ssh_user }}"  # e.g., "ubuntu", "admin", "alex"
+ssh_user: "{{ vault_ssh_user }}"  # e.g., "ubuntu", "admin", "operator"
 ssh_key_path: "{{ vault_ssh_key_path }}"  # e.g., "/home/user/.ssh/id_rsa"
 
 # Terraform outputs (will be populated dynamically)
